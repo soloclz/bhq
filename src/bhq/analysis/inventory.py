@@ -78,7 +78,7 @@ def inventory(g):
         if suffix and suffix not in SUFFIXES.get(root, set()):
             outlet = None
         if root == 'Properties':
-            prop = field.split('.', 1)[-1].split('[]', 1)[0]
+            prop = suffix
             from .pki import TEMPLATE_FIELDS
             pki_properties = set(TEMPLATE_FIELDS) | {'name', 'domain', 'domainsid', 'distinguishedname', 'description',
                 'oid', 'caname', 'dnshostname', 'certthumbprint', 'certthumbprints', 'certchain',
@@ -88,6 +88,18 @@ def inventory(g):
         rows.append({'kind': kind, 'field': field, 'object_count': len(row['objects']),
                      'status': 'query-outlet' if outlet else 'raw-only', 'outlet': outlet or 'object',
                      'examples': row['examples']})
-    return {'fields': rows, 'unhandled_files': g.unhandled_files,
+    from ..loader import CONTROL_RIGHTS, DCSYNC_RIGHTS
+    from .pki import PKI_RIGHTS
+    unmodeled_rights = []
+    for obj in g.objects:
+        sid = obj['ObjectIdentifier']
+        known = CONTROL_RIGHTS | (DCSYNC_RIGHTS if g.kind(sid) == 'domain' else set())
+        if g.kind(sid) in ADCS_TYPES.values():
+            known = known | PKI_RIGHTS
+        for i, ace in enumerate(obj.get('Aces') or []):
+            if ace.get('RightName') not in known:
+                unmodeled_rights.append({'right': ace.get('RightName'), 'principal_id': ace.get('PrincipalSID'),
+                                        'evidence': evidence(g, sid, f'Aces[{i}]')})
+    return {'fields': rows, 'unhandled_files': g.unhandled_files, 'unmodeled_ace_rights': unmodeled_rights,
             'limitations': ['query-outlet identifies a known field shape with a dedicated outlet, not a verified effective-access conclusion.',
                             'raw-only fields remain available through object; counts describe only loaded input.']}

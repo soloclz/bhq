@@ -84,7 +84,7 @@ def _extended_lines(data):
              f"- sid-history: {len(ext['sid-history'])} entries; user-rights: {len(ext['user-rights'])} assignments",
              f"- policy: {len(pol['links'])} links, {len(pol['effects'])} scope results, {len(pol['changes'])} projected group records, {len(pol['issues'])} issues",
              f"- adcs: {len(pki_data['cas'])} enterprise CAs, {len(pki_data['templates'])} templates, {len(pki_data['publications'])} publication records",
-             f"- coverage: {raw} raw-only field paths; use bhq coverage <collection> --raw-only"]
+             f"- coverage: {raw} raw-only field paths, {len(ext['coverage']['unmodeled_ace_rights'])} unmodeled ACE entries; use bhq coverage <collection> --raw-only"]
     if 'candidate_route' in data:
         lines += ['', 'Conditional route (account/object/host states):']
         lines += presentation.lines('route', data['candidate_route'])

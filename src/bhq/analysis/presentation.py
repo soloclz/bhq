@@ -70,6 +70,8 @@ def lines(command, data):
     elif command == 'coverage':
         for row in data['fields']:
             out.append(f"{row['status']} {row['kind']} {row['field']}: {row['object_count']} objects -> {row['outlet']}")
+        for row in data['unmodeled_ace_rights']:
+            out.append(f"unmodeled ACE right: {row['right']} principal={row['principal_id']}" + proof(row))
         for filename in data['unhandled_files']:
             out.append('unhandled file: ' + filename)
         out.extend(data['limitations'])

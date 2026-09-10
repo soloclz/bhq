@@ -356,3 +356,11 @@ def test_null_result_array_remains_invalid_not_empty_success(tmp_path):
     assert observations.sessions(g)[0]['state'] == 'invalid'
     assert observations.local_access(g)[0]['state'] == 'invalid'
     assert not any(e['relationship'] == 'AdminTo' for e in routes.relationships(g))
+
+
+def test_unknown_right_name_is_visible_even_when_ace_shape_is_known(tmp_path):
+    _write(tmp_path)
+    mutate(tmp_path, 'users', lambda u: u[1]['Aces'].append({'PrincipalSID': ALICE, 'RightName': 'FutureRight'}))
+    data = inventory.inventory(load(tmp_path))
+    assert data['unmodeled_ace_rights'][0]['right'] == 'FutureRight'
+    assert data['unmodeled_ace_rights'][0]['evidence']['object_id'] == BOB
