@@ -6,11 +6,11 @@ from __future__ import annotations
 
 from collections import deque
 
-from .loader import WELL_KNOWN_ADMIN_RIDS, Graph, rid_of
+from .loader import WELL_KNOWN_HIGH_VALUE_RIDS, Graph, rid_of
 
 # "High value" is derived, not listed. Three tiers, in decreasing order of how
 # universal they are:
-#   1. schema    — WELL_KNOWN_ADMIN_RIDS (loader): fixed by Microsoft, same in
+#   1. schema    — WELL_KNOWN_HIGH_VALUE_RIDS (loader): fixed by Microsoft, same in
 #                  every forest, immune to renaming and localisation.
 #   2. derived   — whatever the collected ACEs say is dangerous: replication
 #                  rights on the domain object (DCSync), or full control of it.
@@ -40,7 +40,7 @@ ANALYSIS_SCOPE = {
         "GPO links and OU inheritance",
         "AD CS certificate attack paths",
         "interactive sessions",
-        "RBCD, SID history, and user rights",
+        "RBCD paths, SID history, and user rights",
         "edge exploitation preconditions",
         "effective access checks (deny ACEs and token restrictions)",
         "Entra ID and hybrid identity",
@@ -92,7 +92,19 @@ def delegation(g: Graph) -> dict:
         if atd or targets:
             constrained.append({"name": p.get("samaccountname") or p.get("name"),
                                 "to": atd, "targets": targets})
-    return {"unconstrained": unconstrained, "constrained": constrained}
+    rbcd = []
+    for obj in g.computers:
+        principals = []
+        for principal in obj.get("AllowedToAct") or []:
+            sid = principal.get("ObjectIdentifier")
+            if sid:
+                principals.append({"id": sid, "name": g.qualified_name(sid),
+                                   "type": principal.get("ObjectType"), "resolved": sid in g.by_sid})
+        if principals:
+            target = obj["ObjectIdentifier"]
+            rbcd.append({"target_id": target, "target": g.qualified_name(target),
+                         "principals": principals, "source_file": g.object_sources.get(target)})
+    return {"unconstrained": unconstrained, "constrained": constrained, "rbcd": rbcd}
 
 
 def dcsync_findings(g: Graph) -> list[dict]:
@@ -148,8 +160,8 @@ def high_value_sids(g: Graph) -> dict[str, str]:
     """Investigation targets and their reasons, not a claim of DA equivalence."""
     out: dict[str, str] = {}
     for sid in g.by_sid:
-        if g.kind(sid) in ("user", "group") and rid_of(sid) in WELL_KNOWN_ADMIN_RIDS:
-            out[sid] = "well-known-admin-rid"
+        if g.kind(sid) in ("user", "group") and rid_of(sid) in WELL_KNOWN_HIGH_VALUE_RIDS:
+            out[sid] = "well-known-high-value-rid"
     for sid in dcsync_principal_sids(g):
         out.setdefault(sid, "dcsync-on-domain")
     for dom in g.domain_sids:
@@ -209,7 +221,7 @@ def controls(g: Graph, sid: str, max_depth: int = 2) -> list[tuple[int, str, str
     return out
 
 
-def shortest_path(g: Graph, start_sid: str, goal_sids: set[str]) -> list[tuple[str, str]] | None:
+def shortest_path(g: Graph, start_sid: str, goal_sids: set[str]) -> list[tuple[str, str | None]] | None:
     """Shortest control/membership path start -> any goal.
     Returns [(sid, edge_used_to_reach_it), …]; first hop's edge is None."""
     prev: dict[str, tuple[str | None, str | None]] = {start_sid: (None, None)}
@@ -237,13 +249,13 @@ def shortest_path(g: Graph, start_sid: str, goal_sids: set[str]) -> list[tuple[s
     return list(reversed(chain))
 
 
-def path_to_goal(g: Graph, start_sid: str, goal: str = "high-value") -> tuple[list[tuple[str, str]] | None, list[str]]:
+def path_to_goal(g: Graph, start_sid: str, goal: str = "high-value") -> tuple[list[tuple[str, str | None]] | None, list[str]]:
     """Shortest recorded ACL/membership path to the explicitly selected goal set."""
     goals = goal_sids(g, goal)
     return shortest_path(g, start_sid, set(goals)), sorted(g.name(s) for s in goals)
 
 
-def path_to_da(g: Graph, start_sid: str) -> tuple[list[tuple[str, str]] | None, list[str]]:
+def path_to_da(g: Graph, start_sid: str) -> tuple[list[tuple[str, str | None]] | None, list[str]]:
     """Shortest recorded path specifically to a loaded Domain Admins group."""
     return path_to_goal(g, start_sid, "da")
 
@@ -387,7 +399,6 @@ def diagnostics(g: Graph) -> list[str]:
             if not g.local_collection_status[label].get(sid):
                 warnings.append(f"{label} on {g.qualified_name(sid)} reported FailureReason with Collected=false: {reason}")
     unmodeled = {
-        "AllowedToAct": "RBCD",
         "HasSIDHistory": "SID history",
         "UserRights": "user rights",
     }
@@ -459,3 +470,16 @@ def property_clues(g: Graph, kind: str | None = None) -> list[dict]:
         if selected:
             rows.append({**item, "properties": selected})
     return rows
+
+
+
+def trusts(g: Graph) -> list[dict]:
+    """Preserve trust fields relative to the source domain, without deriving access."""
+    rows = []
+    for domain in g.domains:
+        sid = domain["ObjectIdentifier"]
+        for trust in domain.get("Trusts") or []:
+            rows.append({"source_id": sid, "source": g.qualified_name(sid),
+                         "source_file": g.object_sources.get(sid), "trust": dict(trust)})
+    return sorted(rows, key=lambda row: (row["source_id"], str(row["trust"].get("TargetDomainSid", "")),
+                                        str(row["trust"].get("TargetDomainName", ""))))

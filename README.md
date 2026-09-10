@@ -14,6 +14,7 @@ prints.
 | What ACL and group-membership paths start at this principal? | `bhq path` / `bhq controls` |
 | What local admin or remote-access relationships were collected? | `bhq local` |
 | What delegation settings and replication rights were recorded? | `bhq deleg` / `bhq dcsync` |
+| What trust configuration was recorded for each domain? | `bhq trusts` |
 | Which principals can reach the configured high-value set? | `bhq reachers` |
 
 Each command takes the collection path first. `report` combines these queries.
@@ -53,6 +54,7 @@ bhq controls ./collection "SRVADMINS@TEST.LOCAL" -d 3
 bhq members ./collection "DOMAIN ADMINS@TEST.LOCAL"
 bhq local ./collection alice
 bhq deleg ./collection
+bhq trusts ./collection
 bhq dcsync ./collection
 bhq reachers ./collection
 ```
@@ -97,6 +99,12 @@ References: [BloodHound JSON formats](https://bloodhound.specterops.io/integrati
   retains raw `Properties.allowedtodelegate` values; `targets` separately reports
   `AllowedToDelegate` object IDs, names, types, and whether they resolve in the
   loaded collection. Target objects do not establish a service name or port.
+  `delegation.rbcd` lists configured `AllowedToAct` principals for each target;
+  it does not prove control of those principals or create executable RBCD paths.
+- **Trust direction is relative to the source domain.** `trusts` preserves the
+  collector's field names and values; false stays false and unrecorded fields
+  display as null. A trust record does not verify connectivity, authentication,
+  selective authentication, or permission to access resources across that trust.
 - **The goal set is broader than Domain Admins.** It includes selected well-known
   RIDs, principals with recorded domain-control or replication rights, and the
   named group `DnsAdmins`. Reaching a goal does not prove Domain Admin membership
@@ -152,4 +160,17 @@ MIT. See [LICENSE](LICENSE).
 
 JSON reports replace the misleading `path_to_da` key with `path` and add `goal`.
 The Python `path_to_da()` helper now means Domain Admins specifically; use
-`path_to_goal()` for the default high-value target set.
+`path_to_goal()` for the default high-value target set. Reports add domain-scoped
+`dcsync_findings`, `property_clues`, `delegation.rbcd`, and `trusts`. Existing
+`dcsync` name lists remain, but domain identity and grant provenance are in
+`dcsync_findings`.
+
+## Remaining coverage gaps
+
+| Area | What is still required |
+|---|---|
+| Local access and sessions | Supplement collector gaps and validate access; these relationships are not joined into paths |
+| GPO effects | Evaluate links, inheritance, filtering and actual application; direct GPO ACLs alone do not establish affected hosts |
+| AD CS | Use a separate analyzer; bhq only identifies unhandled AD CS filenames |
+| Shares, SYSVOL file contents, services and live authentication | Separate protocol-specific enumeration and verification |
+| Full collector compatibility | Real lab output and comparisons with known configuration; synthetic fixtures cover selected cases only |

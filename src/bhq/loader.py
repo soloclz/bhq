@@ -36,7 +36,7 @@ DCSYNC_RIGHTS = {"GetChanges", "GetChangesAll", "GetChangesInFilteredSet", "DCSy
 # identical in every forest, unlike the *display names*, which are localised — a
 # non-English install renames the groups but keeps the RID. Match on these, never
 # on names. (S-1-5-32-<RID> for BUILTIN aliases, <domainSID>-<RID> for domain groups.)
-WELL_KNOWN_ADMIN_RIDS = {
+WELL_KNOWN_HIGH_VALUE_RIDS = {
     500,  # Administrator
     512,  # Domain Admins
     518,  # Schema Admins

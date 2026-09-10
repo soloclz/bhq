@@ -187,8 +187,9 @@ def test_received_but_unmodeled_data_is_visible(tmp_path):
     filename = f"{PREFIX}_certtemplates.json"
     assert data["collection"]["unhandled_files"] == [filename]
     warnings = "\n".join(data["analysis"]["warnings"])
-    for marker in (filename, "session results", "AllowedToAct", "UserRights", "GPOChanges"):
+    for marker in (filename, "session results", "UserRights", "GPOChanges"):
         assert marker in warnings
+    assert data["delegation"]["rbcd"][0]["principals"][0]["id"] == ALICE
     assert "SYNTHETIC-TEMPLATE" not in g.by_sid
 
 

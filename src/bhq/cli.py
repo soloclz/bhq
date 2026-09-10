@@ -1,12 +1,12 @@
 """`bhq` — offline BloodHound analysis CLI.
 
-    bhq report <path> [--from hporter]     combined queries and collection limits
+    bhq report <path> [--from alice]     combined queries and collection limits
     bhq path   <path> <from>               shortest recorded path -> selected targets
     bhq controls <path> <principal> [-d N] what a principal controls (N hops)
     bhq kerberoast <path>                  users with SPNs
     bhq asrep <path>                       users not requiring pre-auth
-    bhq deleg <path>                       delegation (unconstrained / constrained)
-    bhq dcsync <path>                      principals that can DCSync
+    bhq deleg <path>                       recorded delegation, including RBCD
+    bhq dcsync <path>                      recorded replication grants and membership
     bhq reachers <path>                    everyone with a path to high-value targets
     bhq members <path> <group>            resolve a group's members
     bhq local <path> <principal>          computers the principal is admin/remote on
@@ -106,6 +106,11 @@ def cmd_deleg(args):
     print("unconstrained: " + (", ".join(d["unconstrained"]) or "(none)"))
     for c in d["constrained"]:
         print(f"constrained: {c['name']} -> {report.delegation_targets(c)}")
+    print("Recorded RBCD configuration; accepted principals do not establish an executable path:")
+    for row in d["rbcd"]:
+        print(report.rbcd_finding(row))
+    if not d["rbcd"]:
+        print("(no populated AllowedToAct in loaded computers)")
 
 
 def cmd_dcsync(args):
@@ -155,6 +160,15 @@ def cmd_local(args):
         print("(none collected — computer local-group data may be missing)")
     for name, label in rows:
         print(f"{name} ({label})")
+
+
+def cmd_trusts(args):
+    rows = queries.trusts(_load(args))
+    print("Recorded trust fields; direction is relative to source, null means not recorded. Access is not verified.")
+    for row in rows:
+        print(report.trust_finding(row))
+    if not rows:
+        print("(no trust entries in loaded domains; collection scope still applies)")
 
 
 OBJECT_KINDS = ["user", "group", "computer", "domain", "gpo", "ou", "container"]
@@ -215,7 +229,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     add("kerberoast", cmd_kerberoast, "users with SPNs")
     add("asrep", cmd_asrep, "users not requiring Kerberos pre-auth")
-    add("deleg", cmd_deleg, "delegation (unconstrained / constrained)")
+    add("deleg", cmd_deleg, "recorded unconstrained, constrained, and RBCD configuration")
     add("dcsync", cmd_dcsync, "replication grants combined per principal and domain")
     s = add("reachers", cmd_reachers, "principals with recorded paths to selected targets")
     s.add_argument("--goal", choices=["high-value", "da"], default="high-value")
@@ -226,6 +240,7 @@ def build_parser() -> argparse.ArgumentParser:
     s = add("local", cmd_local, "computers a principal is admin/remote on")
     s.add_argument("principal")
 
+    add("trusts", cmd_trusts, "recorded trust fields relative to each source domain")
     s = add("objects", cmd_objects, "list loaded objects, including GPOs and OUs")
     s.add_argument("--kind", choices=OBJECT_KINDS)
     s.add_argument("--match", default="", help="case-insensitive name or identifier substring")

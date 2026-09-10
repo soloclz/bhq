@@ -11,8 +11,7 @@ Graph:  alice --ForceChangePassword--> bob --MemberOf--> DOMAIN ADMINS
 
 The second chain is the regression case: the goal is a group nobody named in
 advance, that is not Domain Admins, and that has no members — so neither a
-hard-coded name list nor a membership-based audit sees it, while reaching it is
-still full domain compromise.
+hard-coded name list nor a membership-based audit sees it, while its recorded replication grants make it an investigation target.
 """
 
 from __future__ import annotations
@@ -262,8 +261,8 @@ def test_high_value_is_derived_not_named(tmp_path):
     g = load(str(tmp_path))
     hv = queries.high_value_sids(g)
     assert hv[SRVADMINS] == "dcsync-on-domain"
-    assert hv[DA] == "well-known-admin-rid"
-    assert hv[ADMIN] == "well-known-admin-rid"
+    assert hv[DA] == "well-known-high-value-rid"
+    assert hv[ADMIN] == "well-known-high-value-rid"
     assert CAROL not in hv and DAVE not in hv
 
 

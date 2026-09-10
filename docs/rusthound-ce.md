@@ -45,15 +45,22 @@ Source references:
 - In this version, `DCOnly` includes DC SYSVOL access; `LdapOnly` excludes it.
   Preserve the actual command and logs rather than interpreting `methods: 0` or
   assuming that all modes named DCOnly have identical behavior across collectors.
-- `AllowedToAct`, `HasSIDHistory`, `UserRights`, populated sessions, `Trusts`, and
-  GPO-derived local groups are not analyzed. Runtime notices identify populated
-  fields, but the notice list is not a complete inventory of every unused field.
+- `AllowedToAct` is exposed as recorded RBCD configuration, and `Trusts` as raw
+  fields associated with the source domain. Neither contributes path edges.
+  Direct GPO/OU/container ACLs are loaded, but policy effects are not derived.
+  `HasSIDHistory`, `UserRights`, populated sessions, and GPO-derived local groups
+  remain unmodeled; notices are not a complete inventory of every unused field.
 
 Source references:
 [mode definitions](https://github.com/g0h4n/RustHound-CE/blob/aeb28db95f0149a1579c2517536083e150ae2803/src/args.rs),
 [module dispatch](https://github.com/g0h4n/RustHound-CE/blob/aeb28db95f0149a1579c2517536083e150ae2803/src/modules/mod.rs),
 [GPO mapping](https://github.com/g0h4n/RustHound-CE/blob/aeb28db95f0149a1579c2517536083e150ae2803/src/modules/gpo/local_group.rs),
 [session handling](https://github.com/g0h4n/RustHound-CE/blob/aeb28db95f0149a1579c2517536083e150ae2803/src/modules/sessions/mod.rs).
+
+RBCD fields follow the computer structure above. Trust fields follow the
+[trust structure](https://github.com/g0h4n/RustHound-CE/blob/aeb28db95f0149a1579c2517536083e150ae2803/src/objects/trust.rs).
+Additional synthetic cases in `tests/test_ad_coverage.py` exercise source-relative
+trust fields, configured RBCD principals, policy ACLs and nested replication grants.
 
 ## Remaining validation
 

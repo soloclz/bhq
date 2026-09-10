@@ -26,6 +26,7 @@ def build(g: Graph, start_name: str | None = None, goal: str = "high-value") -> 
         "kerberoastable": queries.kerberoastable(g),
         "asreproastable": [a["name"] for a in queries.asreproastable(g)],
         "delegation": queries.delegation(g),
+        "trusts": queries.trusts(g),
         "dcsync": queries.dcsync_principals(g),
         "dcsync_findings": queries.dcsync_findings(g),
         "high_value_groups": [
@@ -71,6 +72,21 @@ def _coverage_line(c: dict) -> str:
 def property_clue(row: dict) -> str:
     return (f"{row['kind']} {row['name']} [{row['id']}] "
             f"{json.dumps(row['properties'], ensure_ascii=False)} (source: {row['source_file']})")
+
+
+def rbcd_finding(row: dict) -> str:
+    principals = ", ".join(
+        f"{p['name']} [{p['id']}]" + ("" if p["resolved"] else " [not in collection]")
+        for p in row["principals"])
+    return f"AllowedToAct on {row['target']} [{row['target_id']}]: {principals}"
+
+
+def trust_finding(row: dict) -> str:
+    trust = row["trust"]
+    fields = ("TargetDomainName", "TargetDomainSid", "TrustDirection", "TrustType",
+              "IsTransitive", "SidFilteringEnabled", "TrustAttributes")
+    return (f"source={row['source']} [{row['source_id']}]; " + "; ".join(
+        f"{field}={json.dumps(trust.get(field), ensure_ascii=False)}" for field in fields))
 
 
 def dcsync_finding(row: dict) -> str:
@@ -134,6 +150,14 @@ def as_text(data: dict) -> str:
     L.append("Unconstrained delegation: " + (", ".join(data["delegation"]["unconstrained"]) or "(none)"))
     for cd in data["delegation"]["constrained"]:
         L.append(f"Constrained delegation: {cd['name']} -> {delegation_targets(cd)}")
+    L.append("Recorded RBCD configuration (not an executable path):")
+    L.extend("  " + rbcd_finding(row) for row in data["delegation"]["rbcd"])
+    if not data["delegation"]["rbcd"]:
+        L.append("  (no populated AllowedToAct in loaded computers)")
+    L.append("Recorded trusts (direction is relative to source; null means not recorded):")
+    L.extend("  " + trust_finding(row) for row in data["trusts"])
+    if not data["trusts"]:
+        L.append("  (no trust entries in loaded domains; collection scope still applies)")
     L.append("Recorded DCSync rights:")
     L.extend("  " + dcsync_finding(row) for row in data["dcsync_findings"])
     if not data["dcsync_findings"]:
@@ -142,7 +166,7 @@ def as_text(data: dict) -> str:
     for hv in data["high_value_groups"]:
         if hv["members"]:
             L.append(f"{hv['group']} [{hv['why']}] ({len(hv['members'])}): {', '.join(hv['members'])}")
-        elif hv["why"] == "well-known-admin-rid":
+        elif hv["why"] == "well-known-high-value-rid":
             L.append(f"{hv['group']} [{hv['why']}] (0)")     # built-in and empty is the normal state
         else:
             # Granted a dangerous right *and* empty: membership audits see nothing
@@ -209,6 +233,14 @@ def as_md(data: dict) -> str:
           f"- **Unconstrained delegation:** {', '.join('`%s`' % x for x in data['delegation']['unconstrained']) or '(none)'}"]
     for cd in data["delegation"]["constrained"]:
         L.append(f"- **Constrained delegation:** `{cd['name']}` → {delegation_targets(cd)}")
+    L += ["", "**Recorded RBCD configuration (not an executable path):**", ""]
+    L.extend("- " + rbcd_finding(row) for row in data["delegation"]["rbcd"])
+    if not data["delegation"]["rbcd"]:
+        L.append("- (no populated AllowedToAct in loaded computers)")
+    L += ["", "**Recorded trusts (direction relative to source; null means not recorded):**", ""]
+    L.extend("- " + trust_finding(row) for row in data["trusts"])
+    if not data["trusts"]:
+        L.append("- (no trust entries in loaded domains; collection scope still applies)")
     L += ["", "**Recorded DCSync rights:**", ""]
     L.extend("- " + dcsync_finding(row) for row in data["dcsync_findings"])
     if not data["dcsync_findings"]:
@@ -218,7 +250,7 @@ def as_md(data: dict) -> str:
     for hv in data["high_value_groups"]:
         members = ", ".join("`%s`" % m for m in hv["members"])
         if not members:
-            members = ("_(none)_" if hv["why"] == "well-known-admin-rid"
+            members = ("_(none)_" if hv["why"] == "well-known-high-value-rid"
                        else "_(none — privilege live but invisible to membership audits)_")
         L.append(f"| `{hv['group']}` | {hv['why']} | {members} |")
     L += ["", f"## Who can reach {data['goal']} targets ({len(data['reachers'])})", ""]

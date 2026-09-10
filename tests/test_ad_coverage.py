@@ -28,7 +28,7 @@ def test_gpo_creator_goal_is_not_domain_admins(tmp_path, capsys):
     assert 'local-admin hop' not in output
     data = report.build(g, 'dave')
     assert data['goal'] == 'high-value'
-    assert data['path']['endpoint_reason'] == 'well-known-admin-rid'
+    assert data['path']['endpoint_reason'] == 'well-known-high-value-rid'
     assert 'path_to_da' not in data
     for render in (report.as_text, report.as_md):
         text = render(data)
@@ -171,3 +171,58 @@ def test_report_clues_are_bounded_but_json_keeps_all(tmp_path):
         output = render(data)
         assert 'showing 5/7' in output and 'NOTE-6' not in output
         assert 'bhq clues' in output
+
+
+def test_rbcd_configuration_preserves_principals_without_creating_paths(tmp_path, capsys):
+    _write(tmp_path)
+    computers = json.loads((tmp_path / 't_computers.json').read_text())['data']
+    computers[0]['AllowedToAct'] = [
+        {'ObjectIdentifier': DAVE, 'ObjectType': 'User'},
+        {'ObjectIdentifier': 'S-1-5-21-99-99-99-1001', 'ObjectType': 'Computer'},
+    ]
+    replace_collection(tmp_path, 'computers', computers)
+    g = load(tmp_path)
+    rows = queries.delegation(g)['rbcd']
+    assert len(rows) == 1 and rows[0]['target_id'] == computers[0]['ObjectIdentifier']
+    assert rows[0]['principals'][0]['name'] == 'dave'
+    assert rows[0]['principals'][1]['resolved'] is False
+    assert rows[0]['source_file'] == 't_computers.json'
+    assert all(label != 'AllowedToAct' for edges in g.control_edges.values() for _, label in edges)
+    assert cli.main(['deleg', str(tmp_path)]) == 0
+    assert 'not in collection' in capsys.readouterr().out
+    for fmt in ('text', 'md'):
+        assert 'AllowedToAct on WS01.TEST.LOCAL' in report.render(g, fmt=fmt)
+
+
+def test_trust_summary_preserves_source_direction_false_unknown_and_flags(tmp_path, capsys):
+    _write(tmp_path)
+    domains = json.loads((tmp_path / 't_domains.json').read_text())['data']
+    domains[0]['Trusts'] = [
+        {'TargetDomainSid': 'S-1-5-21-40-50-60', 'TargetDomainName': 'OTHER.LOCAL',
+         'TrustDirection': 'Inbound', 'TrustType': 'Forest', 'IsTransitive': False,
+         'SidFilteringEnabled': False, 'TrustAttributes': 8},
+        {'TargetDomainName': 'UNKNOWN.LOCAL', 'TrustDirection': 99},
+    ]
+    replace_collection(tmp_path, 'domains', domains)
+    g = load(tmp_path)
+    rows = queries.trusts(g)
+    row = next(r for r in rows if r['trust']['TargetDomainName'] == 'OTHER.LOCAL')
+    assert row['source_id'] == DOM and row['trust']['TrustDirection'] == 'Inbound'
+    assert row['trust']['SidFilteringEnabled'] is False
+    assert row['source_file'] == 't_domains.json'
+    assert report.build(g)['trusts'] == rows
+    assert cli.main(['trusts', str(tmp_path)]) == 0
+    text = capsys.readouterr().out
+    assert 'source=TEST.LOCAL' in text and 'TrustDirection="Inbound"' in text
+    assert 'SidFilteringEnabled=false' in text and 'SidFilteringEnabled=null' in text
+    assert 'TrustDirection=99' in text  # no guessed interpretation of unknown values
+    for fmt in ('text', 'md'):
+        assert 'OTHER.LOCAL' in report.render(g, fmt=fmt)
+
+
+def test_empty_trust_and_rbcd_results_remain_scoped(tmp_path, capsys):
+    _write(tmp_path)
+    assert cli.main(['trusts', str(tmp_path)]) == 0
+    assert 'collection scope still applies' in capsys.readouterr().out
+    g = load(tmp_path)
+    assert queries.delegation(g)['rbcd'] == [] and queries.trusts(g) == []
