@@ -76,7 +76,9 @@ LOCAL_GROUP_RIDS = {
     562: "ExecuteDCOM",   # Distributed COM Users
     580: "CanPSRemote",   # Remote Management Users
 }
-OBJECT_TYPES = ["users", "groups", "computers", "domains", "gpos", "ous", "containers"]
+ADCS_TYPES = {"enterprisecas": "enterpriseca", "rootcas": "rootca", "aiacas": "aiaca",
+              "ntauthstores": "ntauthstore", "certtemplates": "certtemplate", "issuancepolicies": "issuancepolicy"}
+OBJECT_TYPES = ["users", "groups", "computers", "domains", "gpos", "ous", "containers", *ADCS_TYPES]
 # Only these can hold an ACE, sit in a group, or be a path endpoint, so only these
 # answer to a name. AD routinely puts an OU and a group of the same name side by side
 # ("IT Admins" the OU, "IT Admins" the group) — treating that as an ambiguous lookup
@@ -330,6 +332,8 @@ def _load_dir(path: str) -> Graph:
             sid = obj.get("ObjectIdentifier")
             if not isinstance(sid, str) or not sid:
                 raise CollectionError(f"{source}: collection entry has no valid ObjectIdentifier")
+            from .analysis.schema import validate
+            validate(obj, relative)
             if sid and sid in seen:
                 old_type, old_source = seen[sid]
                 raise CollectionError(
@@ -354,7 +358,7 @@ def _load_dir(path: str) -> Graph:
     g.computers, g.domains = buckets["computers"], buckets["domains"]
     # register all objects first so kind/name is known before edge building
     for t in OBJECT_TYPES:
-        kind = t[:-1] if t.endswith("s") else t          # users->user, gpos->gpo, ous->ou
+        kind = ADCS_TYPES.get(t, t[:-1] if t.endswith("s") else t)          # users->user, gpos->gpo, ous->ou
         kind = {"gpo": "gpo", "ou": "ou", "container": "container"}.get(kind, kind)
         for obj in buckets[t]:
             g._register(obj, kind)

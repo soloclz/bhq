@@ -12,6 +12,7 @@ import json
 
 from . import queries
 from .loader import Graph
+from .analysis import observations, policy, pki, routes, inventory, presentation
 
 
 def build(g: Graph, start_name: str | None = None, goal: str = "high-value") -> dict:
@@ -40,6 +41,11 @@ def build(g: Graph, start_name: str | None = None, goal: str = "high-value") -> 
                 queries.who_can_reach_high_value(g, goal).items(), key=lambda kv: (kv[1][0], g.name(kv[0])))
         ],
         "from": start_name,
+        "extended": {
+            "access": observations.local_access(g), "sessions": observations.sessions(g), "sid-history": observations.sid_history(g),
+            "user-rights": observations.user_rights(g), "policy": policy.policy(g),
+            "adcs": pki.adcs(g), "coverage": inventory.inventory(g),
+        },
     }
     if start_name:
         sid = g.sid_of(start_name)
@@ -51,6 +57,8 @@ def build(g: Graph, start_name: str | None = None, goal: str = "high-value") -> 
             else:
                 data["error"] = f"principal not found: {start_name}"
             return data
+        data['extended']['adcs'] = pki.adcs(g, sid)
+        data['candidate_route'] = routes.route(g, sid, set(queries.goal_sids(g, goal)))
         path, goals = queries.path_to_goal(g, sid, goal)
         data["path"] = {
             "goals": goals,
@@ -63,6 +71,24 @@ def build(g: Graph, start_name: str | None = None, goal: str = "high-value") -> 
         ]
         data["local"] = [{"computer": n, "right": r} for n, r in queries.local_admin_of(g, sid)]
     return data
+
+
+def _extended_lines(data):
+    ext = data.get('extended', {})
+    if not ext:
+        return []
+    pol, pki_data = ext['policy'], ext['adcs']
+    raw = sum(r['status'] == 'raw-only' for r in ext['coverage']['fields'])
+    lines = ['', 'Additional recorded data (full details: named command or JSON report):',
+             f"- sessions: {sum(len(r['entries']) for r in ext['sessions'])} entries across {len(ext['sessions'])} method records",
+             f"- sid-history: {len(ext['sid-history'])} entries; user-rights: {len(ext['user-rights'])} assignments",
+             f"- policy: {len(pol['links'])} links, {len(pol['effects'])} scope results, {len(pol['changes'])} projected group records, {len(pol['issues'])} issues",
+             f"- adcs: {len(pki_data['cas'])} enterprise CAs, {len(pki_data['templates'])} templates, {len(pki_data['publications'])} publication records",
+             f"- coverage: {raw} raw-only field paths; use bhq coverage <collection> --raw-only"]
+    if 'candidate_route' in data:
+        lines += ['', 'Conditional route (account/object/host states):']
+        lines += presentation.lines('route', data['candidate_route'])
+    return lines
 
 
 def _coverage_line(c: dict) -> str:
@@ -181,6 +207,7 @@ def as_text(data: dict) -> str:
         arrows = " ".join(
             (f"{h['name']} --{h['via']}-->" if h["via"] else h["name"]) for h in row["path"])
         L.append(f"  {row['name']} ({row['hops']} hop{'s' if row['hops'] != 1 else ''}): {arrows}")
+    L.extend(_extended_lines(data))
     if data.get("from"):
         L.append(f"\n== Q2 from '{data['from']}' ==")
         if data.get("error"):
@@ -261,6 +288,7 @@ def as_md(data: dict) -> str:
             (f"`{h['name']}` —{h['via']}→" if h["via"] else f"`{h['name']}`") for h in row["path"])
         hops = f"{row['hops']} hop" + ("s" if row["hops"] != 1 else "")
         L.append(f"- **{row['name']}** ({hops}): {arrows}")
+    L.extend(_extended_lines(data))
     if data.get("from"):
         L += ["", f"## Q2 — from `{data['from']}`"]
         if data.get("error"):

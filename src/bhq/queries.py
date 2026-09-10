@@ -33,14 +33,15 @@ ANALYSIS_SCOPE = {
     "path_edges": ["ACL object control", "group membership"],
     "separate_findings": [
         "Kerberoast", "AS-REP roast", "delegation", "DCSync",
-        "local admin and remote access",
+        "local admin and remote access", "conditional routes with host/account/object states",
+        "sessions, SID history, user rights, policy scope, and AD CS conditions",
     ],
     "not_modeled": [
         "domain/forest trust traversal",
-        "GPO links and OU inheritance",
-        "AD CS certificate attack paths",
-        "interactive sessions",
-        "RBCD paths, SID history, and user rights",
+        "effective GPO application (candidate scope is reported separately)",
+        "verified AD CS certificate attack paths (recorded conditions are reported separately)",
+        "live session validity and credential availability",
+        "effective user rights and SID-filtering decisions",
         "edge exploitation preconditions",
         "effective access checks (deny ACEs and token restrictions)",
         "Entra ID and hybrid identity",
@@ -398,26 +399,10 @@ def diagnostics(g: Graph) -> list[str]:
         for sid, reason in sorted(failures.items()):
             if not g.local_collection_status[label].get(sid):
                 warnings.append(f"{label} on {g.qualified_name(sid)} reported FailureReason with Collected=false: {reason}")
-    unmodeled = {
-        "HasSIDHistory": "SID history",
-        "UserRights": "user rights",
-    }
-    for field, label in unmodeled.items():
-        count = sum(bool(obj.get(field)) for obj in g.objects)
-        if count:
-            warnings.append(f"{label}: {field} is populated on {count} objects but is not analyzed")
-    sessions = sum(any((obj.get(field) or {}).get("Results") for field in
-                       ("Sessions", "PrivilegedSessions", "RegistrySessions")) for obj in g.computers)
-    if sessions:
-        warnings.append(f"session results are present on {sessions} computers but are not analyzed")
-    gpo_changes = sum(any((obj.get("GPOChanges") or {}).get(field) for field in
-                         ("LocalAdmins", "RemoteDesktopUsers", "DcomUsers", "PSRemoteUsers"))
-                      for obj in g.objects)
-    if gpo_changes:
-        warnings.append(f"GPOChanges contains local-group relationships on {gpo_changes} objects but is not analyzed")
-    kinds = {g.kind(sid) for sid in g.by_sid}
-    if "gpo" in kinds or "ou" in kinds:
-        warnings.append("GPO/OU objects are loaded, but policy links and OU inheritance are not modeled")
+    from .analysis.inventory import inventory
+    raw_count = sum(row['status'] == 'raw-only' for row in inventory(g)['fields'])
+    if raw_count:
+        warnings.append(f"{raw_count} field paths have no dedicated query outlet; use coverage --raw-only or object")
     return warnings
 
 

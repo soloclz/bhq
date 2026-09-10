@@ -22,7 +22,8 @@ import os
 import sys
 
 from . import queries, report
-from .loader import CollectionError, load
+from .loader import ADCS_TYPES, CollectionError, load
+from .analysis import observations, policy, pki, routes, inventory, presentation
 
 
 def _load(args):
@@ -171,7 +172,7 @@ def cmd_trusts(args):
         print("(no trust entries in loaded domains; collection scope still applies)")
 
 
-OBJECT_KINDS = ["user", "group", "computer", "domain", "gpo", "ou", "container"]
+OBJECT_KINDS = ["user", "group", "computer", "domain", "gpo", "ou", "container", *ADCS_TYPES.values()]
 
 
 def cmd_objects(args):
@@ -201,6 +202,34 @@ def cmd_clues(args):
         print(report.property_clue(row))
     if not rows:
         print("(no selected nonempty properties or flags in loaded objects)")
+
+
+def cmd_analysis(args):
+    g = _load(args)
+    if args.command == 'adcs':
+        data = pki.adcs(g, _resolve(g, args.frm) if args.frm else None)
+    elif args.command == 'route':
+        start = _resolve(g, args.frm)
+        if args.to:
+            matches = queries.object_candidates(g, args.to)
+            if len(matches) != 1:
+                print('[X] target not found or ambiguous; use an ObjectIdentifier', file=sys.stderr)
+                raise SystemExit(1)
+            goals = set(matches)
+        else:
+            goals = set(queries.goal_sids(g, args.goal))
+        data = routes.route(g, start, goals, args.state)
+    else:
+        functions = {'access': observations.local_access, 'sessions': observations.sessions, 'sid-history': observations.sid_history,
+                     'user-rights': observations.user_rights, 'policy': policy.policy,
+                     'coverage': inventory.inventory}
+        data = functions[args.command](g)
+        if args.command == 'coverage' and args.raw_only:
+            data['fields'] = [row for row in data['fields'] if row['status'] == 'raw-only']
+    if args.format == 'json':
+        print(json.dumps(data, indent=2, ensure_ascii=False))
+    else:
+        print('\n'.join(presentation.lines(args.command, data)))
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -248,6 +277,28 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("name", help="exact name or ObjectIdentifier")
     s = add("clues", cmd_clues, "show selected recorded properties and flags")
     s.add_argument("--kind", choices=OBJECT_KINDS)
+
+    for name, help_ in (
+        ('access', 'recorded local-access entries with collection state and provenance'),
+        ('sessions', 'recorded session entries, method, state and provenance'),
+        ('sid-history', 'historical SIDs and their recorded sources'),
+        ('user-rights', 'recorded user-right assignments, including deny rights'),
+        ('policy', 'GPO links, inheritance candidates and projected local groups'),
+        ('adcs', 'CA/template conditions, publication and enrollment grants'),
+        ('coverage', 'all observed field paths and their query outlets'),
+        ('route', 'conditional route with distinct account, object and host states'),
+    ):
+        s = add(name, cmd_analysis, help_)
+        s.add_argument('--format', choices=['text', 'json'], default='text')
+        if name == 'adcs':
+            s.add_argument('--from', dest='frm', help='evaluate grants through this principal membership')
+        if name == 'coverage':
+            s.add_argument('--raw-only', action='store_true', help='fields without a dedicated query outlet')
+        if name == 'route':
+            s.add_argument('frm', metavar='FROM')
+            s.add_argument('--to', help='specific target name or identifier')
+            s.add_argument('--goal', choices=['high-value', 'da'], default='da')
+            s.add_argument('--state', choices=['principal', 'host', 'object', 'remote', 'sid'], default='principal')
 
     return p
 

@@ -171,7 +171,7 @@ def test_empty_core_type_is_omitted_without_claiming_collection_failure(tmp_path
     assert any("omits empty collections" in warning for warning in warnings)
 
 
-def test_received_but_unmodeled_data_is_visible(tmp_path):
+def test_received_extended_data_has_analysis_outlets(tmp_path):
     objects = synthetic_collection()
     objects["computers"][0]["Sessions"]["Results"] = [{"UserSID": ALICE, "ComputerSID": FRONTEND}]
     objects["computers"][0]["AllowedToAct"] = [member(ALICE, "User")]
@@ -184,13 +184,13 @@ def test_received_but_unmodeled_data_is_visible(tmp_path):
     g = load(write_collection(tmp_path, objects))
     assert not g.admin_edges  # GPOChanges is not a direct LocalGroups observation.
     data = report.build(g)
-    filename = f"{PREFIX}_certtemplates.json"
-    assert data["collection"]["unhandled_files"] == [filename]
-    warnings = "\n".join(data["analysis"]["warnings"])
-    for marker in (filename, "session results", "UserRights", "GPOChanges"):
-        assert marker in warnings
+    assert data["collection"]["unhandled_files"] == []
+    assert data['extended']['sessions'][0]['entries']
+    assert data['extended']['user-rights']
+    assert data['extended']['policy']['changes']
+    assert data['extended']['adcs']['templates'][0]['template']['id'] == 'SYNTHETIC-TEMPLATE'
     assert data["delegation"]["rbcd"][0]["principals"][0]["id"] == ALICE
-    assert "SYNTHETIC-TEMPLATE" not in g.by_sid
+    assert "SYNTHETIC-TEMPLATE" in g.by_sid
 
 
 def test_failure_reason_with_collected_false_is_not_silent(tmp_path):
