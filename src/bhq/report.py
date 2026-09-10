@@ -22,6 +22,7 @@ def build(g: Graph, start_name: str | None = None, goal: str = "high-value") -> 
             "scope": queries.ANALYSIS_SCOPE,
             "warnings": queries.diagnostics(g),
         },
+        "property_clues": queries.property_clues(g),
         "kerberoastable": queries.kerberoastable(g),
         "asreproastable": [a["name"] for a in queries.asreproastable(g)],
         "delegation": queries.delegation(g),
@@ -65,6 +66,11 @@ def build(g: Graph, start_name: str | None = None, goal: str = "high-value") -> 
 
 def _coverage_line(c: dict) -> str:
     return f"users={c['users']}  groups={c['groups']}  computers={c['computers']}"
+
+
+def property_clue(row: dict) -> str:
+    return (f"{row['kind']} {row['name']} [{row['id']}] "
+            f"{json.dumps(row['properties'], ensure_ascii=False)} (source: {row['source_file']})")
 
 
 def dcsync_finding(row: dict) -> str:
@@ -114,6 +120,11 @@ def as_text(data: dict) -> str:
         L.append("  collection has the core object types; path scope limits still apply")
     excluded = ", ".join(data["analysis"]["scope"]["not_modeled"])
     L.append(f"  path model: ACL control + group membership; not modeled: {excluded}")
+    clues = data["property_clues"]
+    L.append(f"\n== recorded property clues (showing {min(5, len(clues))}/{len(clues)}) ==")
+    L.extend(property_clue(row) for row in clues[:5])
+    if len(clues) > 5:
+        L.append("Use bhq clues <collection> for all selected properties; these are not verified credentials.")
     L.append("\n== Q1 offline-crackable ==")
     L.append(f"Kerberoastable ({len(data['kerberoastable'])}):")
     for k in data["kerberoastable"]:
@@ -184,6 +195,11 @@ def as_md(data: dict) -> str:
         L.append("Core object types are present; the path-scope limits below still apply.")
     excluded = ", ".join(data["analysis"]["scope"]["not_modeled"])
     L += ["", f"**Path model:** ACL control + group membership. **Not modeled:** {excluded}."]
+    clues = data["property_clues"]
+    L += ["", f"## Recorded property clues (showing {min(5, len(clues))}/{len(clues)})", ""]
+    L.extend("- " + property_clue(row) for row in clues[:5])
+    if len(clues) > 5:
+        L += ["", "Use `bhq clues <collection>` for all selected properties; these are not verified credentials."]
     L += ["", "## Q1 — offline-crackable", "", f"**Kerberoastable ({len(data['kerberoastable'])})**", "",
           "| account | SPN | admincount |", "|---|---|---|"]
     for k in data["kerberoastable"]:

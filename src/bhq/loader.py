@@ -119,6 +119,7 @@ class Graph:
     def __init__(self):
         self.objects: list[dict] = []
         self.by_sid: dict[str, dict] = {}
+        self.object_sources: dict[str, str] = {}
         self._name: dict[str, str] = {}
         self._kind: dict[str, str] = {}
         self._aliases: dict[str, set[str]] = {}
@@ -337,6 +338,7 @@ def _load_dir(path: str) -> Graph:
                 )
             if sid:
                 seen[sid] = (t, source)
+                g.object_sources[sid] = relative
             buckets[t].append(obj)
     if not found:
         raise CollectionError(f"no recognised BloodHound JSON files under: {path}")
@@ -356,8 +358,6 @@ def _load_dir(path: str) -> Graph:
         kind = {"gpo": "gpo", "ou": "ou", "container": "container"}.get(kind, kind)
         for obj in buckets[t]:
             g._register(obj, kind)
-    for obj in buckets["users"] + buckets["groups"] + buckets["computers"]:
-        g._add_edges(obj, is_domain=False)
-    for obj in buckets["domains"]:
-        g._add_edges(obj, is_domain=True)
+    for obj in g.objects:
+        g._add_edges(obj, is_domain=g.kind(obj["ObjectIdentifier"]) == "domain")
     return g

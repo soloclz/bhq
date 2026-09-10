@@ -104,3 +104,70 @@ def test_primary_group_replication_grants_are_not_lost_or_duplicated(tmp_path):
     assert g.member_edges_rev[SRVADMINS].count(BOB) == 1
     row = next(r for r in queries.dcsync_findings(g) if r['principal_id'] == BOB)
     assert all(grant['membership_path'] == [BOB, SRVADMINS] for grant in row['grants'])
+
+
+def test_gpo_ou_container_acls_are_visible_without_inventing_policy_effects(tmp_path):
+    _write(tmp_path)
+    for kind in ('gpos', 'ous', 'containers'):
+        replace_collection(tmp_path, kind, [
+            {'ObjectIdentifier': f'TEST-{kind}', 'Properties': {'name': 'POLICY@TEST.LOCAL'},
+             'Aces': [{'PrincipalSID': DAVE, 'RightName': 'GenericAll'}]},
+        ])
+    g = load(tmp_path)
+    targets = {sid for sid, right in g.control_edges[DAVE] if right == 'GenericAll'}
+    assert {'TEST-gpos', 'TEST-ous', 'TEST-containers'} <= targets
+    assert len(queries.controls(g, DAVE, 1)) == 4  # three policy objects plus carol
+    assert not any(sid.startswith('TEST-') for sid in queries.goal_sids(g))
+    assert queries.object_details(g, 'TEST-gpos')['source_file'] == 't_gpos.json'
+
+
+def test_object_lookup_preserves_principal_disambiguation(tmp_path, capsys):
+    import pytest
+    _write(tmp_path)
+    replace_collection(tmp_path, 'ous', [
+        {'ObjectIdentifier': 'TEST-OU', 'Properties': {'name': 'SRVADMINS@TEST.LOCAL'}}])
+    g = load(tmp_path)
+    assert g.sid_of('SRVADMINS') == SRVADMINS  # control commands resolve principals only
+    assert set(queries.object_candidates(g, 'srvadmins')) == {SRVADMINS, 'TEST-OU'}
+    with pytest.raises(SystemExit):
+        cli.main(['object', str(tmp_path), 'srvadmins'])
+    assert 'ambiguous object' in capsys.readouterr().err
+    assert cli.main(['object', str(tmp_path), 'TEST-OU']) == 0
+    output = json.loads(capsys.readouterr().out)
+    assert output['object']['Properties']['name'] == 'SRVADMINS@TEST.LOCAL'
+    assert cli.main(['objects', str(tmp_path), '--kind', 'ou', '--match', 'srv']) == 0
+    assert 'TEST-OU' in capsys.readouterr().out
+
+
+def test_property_clues_preserve_values_false_flags_and_full_record(tmp_path, capsys):
+    _write(tmp_path)
+    users = json.loads((tmp_path / 't_users.json').read_text())['data']
+    users[0]['Properties'].update(description='Ask the demo helpdesk', homedirectory=r'\\files.example.test\homes',
+                                  passwordnotreqd=True, enabled=False, arbitrary_field='kept in object')
+    users[1]['Properties'].update(description='', passwordnotreqd=False, enabled=True)
+    replace_collection(tmp_path, 'users', users)
+    g = load(tmp_path)
+    row = next(row for row in queries.property_clues(g) if row['id'] == ALICE)
+    assert row['properties'] == {'description': 'Ask the demo helpdesk',
+                                'homedirectory': r'\\files.example.test\homes',
+                                'passwordnotreqd': True, 'enabled': False}
+    assert row['source_file'] == 't_users.json'
+    assert not any(row['id'] == BOB for row in queries.property_clues(g))
+    assert queries.object_details(g, ALICE)['object']['Properties']['arbitrary_field'] == 'kept in object'
+    assert cli.main(['clues', str(tmp_path), '--kind', 'user']) == 0
+    output = capsys.readouterr().out
+    assert 'Ask the demo helpdesk' in output and 'not verified credentials' in output
+
+
+def test_report_clues_are_bounded_but_json_keeps_all(tmp_path):
+    _write(tmp_path)
+    replace_collection(tmp_path, 'users', [
+        {'ObjectIdentifier': f'{DOM}-{1800+i}', 'Properties': {'name': f'USER-{i}', 'description': f'NOTE-{i}'}}
+        for i in range(7)])
+    g = load(tmp_path)
+    data = report.build(g)
+    assert len(data['property_clues']) == 7
+    for render in (report.as_text, report.as_md):
+        output = render(data)
+        assert 'showing 5/7' in output and 'NOTE-6' not in output
+        assert 'bhq clues' in output

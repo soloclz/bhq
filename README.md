@@ -9,6 +9,7 @@ prints.
 
 | Question | Command |
 |---|---|
+| What objects and recorded property clues are available? | `bhq objects` / `bhq object` / `bhq clues` |
 | Which accounts have SPNs or do not require Kerberos pre-authentication? | `bhq kerberoast` / `bhq asrep` |
 | What ACL and group-membership paths start at this principal? | `bhq path` / `bhq controls` |
 | What local admin or remote-access relationships were collected? | `bhq local` |
@@ -41,6 +42,9 @@ installing, run `PYTHONPATH=src python3 -m bhq --help` from the checkout.
 ## Usage
 
 ```sh
+bhq objects ./collection --kind gpo
+bhq clues ./collection --kind user
+bhq object ./collection "ALICE@TEST.LOCAL"
 bhq report ./collection --from alice
 bhq report ./collection --from alice --format md -o report.md
 bhq report ./collection --format json -o report.json
@@ -81,7 +85,8 @@ References: [BloodHound JSON formats](https://bloodhound.specterops.io/integrati
 ## Interpretation limits
 
 - **Paths use ACL object-control and group-membership edges.** Local access and
-  delegation are reported separately. Trust traversal, GPO links and OU
+  delegation are reported separately. Direct ACLs on GPOs, OUs, and containers
+  are included in `controls`, without deriving their policy effects. Trust traversal, GPO links and OU
   inheritance, AD CS paths, interactive sessions, and Entra/hybrid identity are
   not modeled. An empty result does not establish that no attack path exists.
 - **A path is not an execution plan.** Object type, effective permissions,
@@ -114,6 +119,20 @@ References: [BloodHound JSON formats](https://bloodhound.specterops.io/integrati
 
 Reports include collection warnings and a machine-readable analysis scope.
 These limitations also apply when a report contains no runtime warnings.
+
+## Objects and property clues
+
+`objects` lists identifiers and names; `--kind` limits the object type and
+`--match` filters names or IDs by substring. `object` returns one complete raw
+record as JSON, with its source filename. If a group and OU share a name, use
+an ObjectIdentifier; principal-only commands retain their existing name lookup.
+
+`clues` selects nonempty description/info, home/script/profile paths and password
+attributes, plus selected flags (passwordnotreqd, trustedtoauth, admincount,
+haslaps, and enabled=false). It does not verify credentials or infer that a flag
+proves exploitability. Fields not selected remain available through `object`.
+Text/Markdown reports show the first five clue objects with a displayed count;
+`clues` and JSON reports retain all selected entries.
 
 ## Contributing
 

@@ -408,3 +408,54 @@ def diagnostics(g: Graph) -> list[str]:
     if "gpo" in kinds or "ou" in kinds:
         warnings.append("GPO/OU objects are loaded, but policy links and OU inheritance are not modeled")
     return warnings
+
+
+# Show recorded values without deciding that a description contains a credential.
+CLUE_TEXT_FIELDS = (
+    "description", "info", "homedirectory", "logonscript", "profilepath",
+    "userpassword", "unixpassword", "unicodepassword", "sfupassword",
+)
+CLUE_TRUE_FIELDS = ("passwordnotreqd", "trustedtoauth", "admincount", "haslaps")
+
+
+def object_index(g: Graph, kind: str | None = None, match: str = "") -> list[dict]:
+    rows = []
+    for sid, obj in g.by_sid.items():
+        if kind and g.kind(sid) != kind:
+            continue
+        fields = (sid, _p(obj).get("name", ""), _p(obj).get("samaccountname", ""))
+        if match and not any(match.casefold() in str(value).casefold() for value in fields):
+            continue
+        rows.append({"id": sid, "name": g.qualified_name(sid), "kind": g.kind(sid),
+                     "source_file": g.object_sources.get(sid)})
+    return sorted(rows, key=lambda row: (row["kind"], row["name"], row["id"]))
+
+
+def object_candidates(g: Graph, query: str) -> list[str]:
+    if query in g.by_sid:
+        return [query]
+    candidates = []
+    for sid, obj in g.by_sid.items():
+        values = (sid, _p(obj).get("name"), _p(obj).get("samaccountname"))
+        if any(query.casefold() in (value.casefold(), value.split("@", 1)[0].casefold())
+               for value in values if isinstance(value, str)):
+            candidates.append(sid)
+    return sorted(candidates)
+
+
+def object_details(g: Graph, sid: str) -> dict:
+    return {"id": sid, "name": g.qualified_name(sid), "kind": g.kind(sid),
+            "source_file": g.object_sources.get(sid), "object": g.by_sid[sid]}
+
+
+def property_clues(g: Graph, kind: str | None = None) -> list[dict]:
+    rows = []
+    for item in object_index(g, kind):
+        props = _p(g.by_sid[item["id"]])
+        selected = {field: props[field] for field in CLUE_TEXT_FIELDS if props.get(field)}
+        selected.update({field: True for field in CLUE_TRUE_FIELDS if props.get(field) is True})
+        if props.get("enabled") is False:
+            selected["enabled"] = False
+        if selected:
+            rows.append({**item, "properties": selected})
+    return rows

@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 
@@ -156,6 +157,38 @@ def cmd_local(args):
         print(f"{name} ({label})")
 
 
+OBJECT_KINDS = ["user", "group", "computer", "domain", "gpo", "ou", "container"]
+
+
+def cmd_objects(args):
+    rows = queries.object_index(_load(args), args.kind, args.match)
+    for row in rows:
+        print(f"{row['kind']} {row['name']} [{row['id']}]")
+    if not rows:
+        print("(no matching loaded objects)")
+
+
+def cmd_object(args):
+    g = _load(args)
+    candidates = queries.object_candidates(g, args.name)
+    if len(candidates) != 1:
+        label = "ambiguous object" if candidates else "object not found"
+        print(f"[X] {label}: {args.name}; use an ObjectIdentifier", file=sys.stderr)
+        for sid in candidates:
+            print(f"    {g.kind(sid)} {g.qualified_name(sid)} [{sid}]", file=sys.stderr)
+        raise SystemExit(1)
+    print(json.dumps(queries.object_details(g, candidates[0]), indent=2, ensure_ascii=False))
+
+
+def cmd_clues(args):
+    rows = queries.property_clues(_load(args), args.kind)
+    print("Recorded properties, not verified credentials; use object for the full record.")
+    for row in rows:
+        print(report.property_clue(row))
+    if not rows:
+        print("(no selected nonempty properties or flags in loaded objects)")
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="bhq", description="Offline BloodHound JSON analyzer.")
     sub = p.add_subparsers(dest="command", required=True)
@@ -192,6 +225,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = add("local", cmd_local, "computers a principal is admin/remote on")
     s.add_argument("principal")
+
+    s = add("objects", cmd_objects, "list loaded objects, including GPOs and OUs")
+    s.add_argument("--kind", choices=OBJECT_KINDS)
+    s.add_argument("--match", default="", help="case-insensitive name or identifier substring")
+    s = add("object", cmd_object, "show one complete recorded object as JSON")
+    s.add_argument("name", help="exact name or ObjectIdentifier")
+    s = add("clues", cmd_clues, "show selected recorded properties and flags")
+    s.add_argument("--kind", choices=OBJECT_KINDS)
 
     return p
 
