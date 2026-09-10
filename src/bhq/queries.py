@@ -42,6 +42,7 @@ ANALYSIS_SCOPE = {
         "interactive sessions",
         "RBCD, SID history, and user rights",
         "edge exploitation preconditions",
+        "effective access checks (deny ACEs and token restrictions)",
         "Entra ID and hybrid identity",
     ],
 }
@@ -94,19 +95,48 @@ def delegation(g: Graph) -> dict:
     return {"unconstrained": unconstrained, "constrained": constrained}
 
 
-def dcsync_principal_sids(g: Graph) -> set[str]:
-    """SIDs holding replication rights on the domain object — GetChanges plus
-    GetChangesAll (both are required; either alone cannot pull secrets), or the
-    combined DCSync edge some collectors post-process them into. The rights must
-    belong to the same principal on the same domain object. Group-derived rights
-    are not combined here; these findings describe directly recorded ACEs."""
-    by_domain_principal: dict[tuple[str, str], set[str]] = {}
+def dcsync_findings(g: Graph) -> list[dict]:
+    """Combine recorded replication grants through membership, within each domain.
+
+    This is a grant-based model, not an effective access check: deny ACEs, token
+    restrictions, and missing membership data are not evaluated. Each grant keeps
+    its original principal and one membership path explaining the derived result.
+    """
+    descendants: dict[str, dict[str, list[str]]] = {}
+    grants: dict[tuple[str, str], dict[str, dict[str, list[str]]]] = {}
     for domain, principal, right in g.domain_aces:
-        by_domain_principal.setdefault((domain, principal), set()).add(right)
-    return {
-        p for (_, p), rights in by_domain_principal.items()
-        if "DCSync" in rights or ({"GetChanges", "GetChangesAll"} <= rights)
-    }
+        if principal not in descendants:
+            paths = {principal: [principal]}
+            queue = deque([principal])
+            while queue:
+                parent = queue.popleft()
+                for member in g.member_edges_rev.get(parent, []):
+                    if member not in paths:
+                        paths[member] = [member] + paths[parent]
+                        queue.append(member)
+            descendants[principal] = paths
+        for subject, path in descendants[principal].items():
+            grants.setdefault((domain, subject), {}).setdefault(right, {})[principal] = path
+    findings = []
+    for (domain, subject), rights in sorted(grants.items()):
+        if "DCSync" not in rights and not {"GetChanges", "GetChangesAll"} <= rights.keys():
+            continue
+        findings.append({
+            "principal_id": subject, "principal": g.qualified_name(subject),
+            "domain_id": domain, "domain": g.qualified_name(domain),
+            "grants": [
+                {"right": right, "granted_to_id": principal,
+                 "granted_to": g.qualified_name(principal), "membership_path": path}
+                for right, sources in sorted(rights.items())
+                for principal, path in sorted(sources.items())
+            ],
+        })
+    return findings
+
+
+def dcsync_principal_sids(g: Graph) -> set[str]:
+    """Principals with a recorded grant combination on at least one domain."""
+    return {row["principal_id"] for row in dcsync_findings(g)}
 
 
 def dcsync_principals(g: Graph) -> list[str]:

@@ -208,8 +208,10 @@ class Graph:
             for m in obj.get("Members") or []:
                 msid = m.get("ObjectIdentifier")
                 if msid:
-                    self.member_edges.setdefault(msid, []).append(sid)
-                    self.member_edges_rev.setdefault(sid, []).append(msid)
+                    self._add_membership(msid, sid)
+        primary_group = obj.get("PrimaryGroupSID")
+        if self._kind.get(sid) in ("user", "computer") and isinstance(primary_group, str) and primary_group:
+            self._add_membership(sid, primary_group)
         # computer local access — one layout per object (a CE computer carries
         # `LocalGroups`, a legacy one the four fields), so either collector line
         # yields the same edges and neither can double-count
@@ -236,6 +238,12 @@ class Graph:
                     self._add_local_members(sid, label, members)
             for label, collected in status.items():
                 self.local_collection_status[label][sid] = collected
+
+    def _add_membership(self, member_sid: str, group_sid: str) -> None:
+        groups = self.member_edges.setdefault(member_sid, [])
+        if group_sid not in groups:
+            groups.append(group_sid)
+            self.member_edges_rev.setdefault(group_sid, []).append(member_sid)
 
     def _add_local_members(self, computer_sid: str, label: str, members) -> None:
         for r in members:

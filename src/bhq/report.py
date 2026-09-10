@@ -26,6 +26,7 @@ def build(g: Graph, start_name: str | None = None, goal: str = "high-value") -> 
         "asreproastable": [a["name"] for a in queries.asreproastable(g)],
         "delegation": queries.delegation(g),
         "dcsync": queries.dcsync_principals(g),
+        "dcsync_findings": queries.dcsync_findings(g),
         "high_value_groups": [
             {"group": grp, "members": members, "why": why}
             for grp, members, why in queries.high_value_members(g)
@@ -64,6 +65,11 @@ def build(g: Graph, start_name: str | None = None, goal: str = "high-value") -> 
 
 def _coverage_line(c: dict) -> str:
     return f"users={c['users']}  groups={c['groups']}  computers={c['computers']}"
+
+
+def dcsync_finding(row: dict) -> str:
+    grants = "; ".join(f"{grant['granted_to']}:{grant['right']}" for grant in row["grants"])
+    return f"{row['principal']} -> {row['domain']}; grants: {grants}"
 
 
 def delegation_targets(row: dict) -> str:
@@ -117,7 +123,10 @@ def as_text(data: dict) -> str:
     L.append("Unconstrained delegation: " + (", ".join(data["delegation"]["unconstrained"]) or "(none)"))
     for cd in data["delegation"]["constrained"]:
         L.append(f"Constrained delegation: {cd['name']} -> {delegation_targets(cd)}")
-    L.append("DCSync-capable: " + (", ".join(data["dcsync"]) or "(none)"))
+    L.append("Recorded DCSync rights:")
+    L.extend("  " + dcsync_finding(row) for row in data["dcsync_findings"])
+    if not data["dcsync_findings"]:
+        L.append("  (no matching recorded grant combination)")
     L.append("\n== high-value groups (derived, not a name list) ==")
     for hv in data["high_value_groups"]:
         if hv["members"]:
@@ -184,7 +193,10 @@ def as_md(data: dict) -> str:
           f"- **Unconstrained delegation:** {', '.join('`%s`' % x for x in data['delegation']['unconstrained']) or '(none)'}"]
     for cd in data["delegation"]["constrained"]:
         L.append(f"- **Constrained delegation:** `{cd['name']}` → {delegation_targets(cd)}")
-    L.append(f"- **DCSync-capable:** {', '.join('`%s`' % x for x in data['dcsync']) or '(none)'}")
+    L += ["", "**Recorded DCSync rights:**", ""]
+    L.extend("- " + dcsync_finding(row) for row in data["dcsync_findings"])
+    if not data["dcsync_findings"]:
+        L.append("- (no matching recorded grant combination)")
     L += ["", "## High-value groups (derived, not a name list)", "",
           "| group | why | members |", "|---|---|---|"]
     for hv in data["high_value_groups"]:

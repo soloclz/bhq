@@ -108,8 +108,12 @@ def cmd_deleg(args):
 
 
 def cmd_dcsync(args):
-    for n in queries.dcsync_principals(_load(args)):
-        print(n)
+    print("Recorded grants through group membership; deny ACEs and token restrictions are not evaluated.")
+    rows = queries.dcsync_findings(_load(args))
+    for row in rows:
+        print(report.dcsync_finding(row))
+    if not rows:
+        print("(no matching recorded grant combination)")
 
 
 def cmd_reachers(args):
@@ -179,7 +183,7 @@ def build_parser() -> argparse.ArgumentParser:
     add("kerberoast", cmd_kerberoast, "users with SPNs")
     add("asrep", cmd_asrep, "users not requiring Kerberos pre-auth")
     add("deleg", cmd_deleg, "delegation (unconstrained / constrained)")
-    add("dcsync", cmd_dcsync, "principals that can DCSync")
+    add("dcsync", cmd_dcsync, "replication grants combined per principal and domain")
     s = add("reachers", cmd_reachers, "principals with recorded paths to selected targets")
     s.add_argument("--goal", choices=["high-value", "da"], default="high-value")
 

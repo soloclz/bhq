@@ -99,11 +99,12 @@ References: [BloodHound JSON formats](https://bloodhound.specterops.io/integrati
   explicit `high-value` goal. Use `--goal da` for loaded Domain Admins groups
   identified by domain SID and RID 512. Reports include the selected goal and
   endpoint reason; an existing goal is a valid zero-hop path.
-- **DCSync findings combine directly recorded rights only for the same principal
-  on the same domain object.** Rights on different domains are never combined.
-  Rights distributed across a user's groups are not aggregated into effective
-  permissions. The current name list means a match on at least one domain, not
-  on every domain in the collection.
+- **DCSync findings combine recorded grants per principal and domain.** Nested
+  group membership and `PrimaryGroupSID` are included; cycles terminate without
+  duplicating membership edges. Grants on different domains are never combined.
+  `dcsync_findings` retains the domain, granting principals, and membership paths.
+  Deny ACEs, token restrictions, and missing membership data are not evaluated;
+  these findings are not a live effective-access check.
 - **Local-access counts are evidence summaries.** `attempted` counts records
   marked `Collected`; `answered` counts records with members. Neither is a
   packet-level observation. Missing records, explicit failures, and empty

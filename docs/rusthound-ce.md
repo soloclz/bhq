@@ -19,7 +19,7 @@ not complete collector documents or a copied engagement collection.
 | Writer sets schema version 6 and collectorversion `RustHound-CE v2.5.12` | Shows declared source; this is not an authenticity check |
 | Writer sets `methods` to 0 for every mode | Warns that the collection command/logs are required to identify the mode |
 | Writer omits empty collections | Missing core files remain an analysis limitation; absence alone does not prove a failed request |
-| Users, groups, computers, domains use `Properties`, `Aces`, `Members`, and `ObjectIdentifier` | Fixtures check account queries, group membership, ACL edges, and directly recorded replication rights |
+| Users, groups, computers, domains use `Properties`, `Aces`, `Members`, and `ObjectIdentifier` | Fixtures check account queries, group membership, ACL edges, and replication grants combined through recorded membership |
 | User/computer `AllowedToDelegate` contains target objects | Reads these separately from raw SPNs in `Properties.allowedtodelegate` |
 | Checker replaces known target FQDNs with SIDs and retains unresolved identifiers | Resolves loaded targets to names; preserves unknown identifiers without inventing SPNs |
 | Six additional AD CS collection types can be emitted | Lists their filenames as not analyzed; does not build AD CS paths |
