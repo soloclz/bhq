@@ -1,0 +1,208 @@
+"""`bhq` — offline BloodHound analysis CLI.
+
+    bhq report <path> [--from hporter]     one-shot: the 4 questions (+ path to DA)
+    bhq path   <path> <from>               shortest control path -> Domain Admins
+    bhq controls <path> <principal> [-d N] what a principal controls (N hops)
+    bhq kerberoast <path>                  users with SPNs
+    bhq asrep <path>                       users not requiring pre-auth
+    bhq deleg <path>                       delegation (unconstrained / constrained)
+    bhq dcsync <path>                      principals that can DCSync
+    bhq reachers <path>                    everyone with a path to admin-equivalence
+    bhq members <path> <group>            resolve a group's members
+    bhq local <path> <principal>          computers the principal is admin/remote on
+
+<path> is a directory of *_users.json… or a BloodHound .zip.
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import sys
+
+from . import queries, report
+from .loader import CollectionError, load
+
+
+def _load(args):
+    # Every subcommand takes the collection path first. A bare word that is not a
+    # path is almost always an option written positionally (`bhq report from bob`
+    # instead of `bhq report ./bh --from bob`); argparse cannot tell, so say so.
+    if not os.path.exists(args.path) and "/" not in args.path and not args.path.endswith(".zip"):
+        print(f"[X] '{args.path}' is not a collection path.\n"
+              f"    Usage: bhq {args.command} <path> ...   (path comes first; options use --)",
+              file=sys.stderr)
+        raise SystemExit(2)
+    try:
+        return load(args.path)
+    except (CollectionError, OSError, UnicodeError) as exc:
+        print(f"[X] cannot read collection: {exc}", file=sys.stderr)
+        raise SystemExit(2)
+
+
+def _resolve(g, name):
+    sid = g.sid_of(name)
+    if not sid:
+        candidates = g.sid_candidates(name)
+        if candidates:
+            print(f"[X] ambiguous principal: {name}", file=sys.stderr)
+            for candidate in sorted(candidates):
+                print(f"    {g.qualified_name(candidate)} [{candidate}]", file=sys.stderr)
+            print("    use a qualified name or SID", file=sys.stderr)
+        else:
+            print(f"[X] not found: {name}", file=sys.stderr)
+        raise SystemExit(1)
+    return sid
+
+
+def cmd_report(args):
+    out = report.render(_load(args), args.frm, fmt=args.format)
+    if args.output:
+        with open(args.output, "w", encoding="utf-8") as fh:
+            fh.write(out if out.endswith("\n") else out + "\n")
+        print(f"[+] wrote {args.format} report -> {args.output}", file=sys.stderr)
+    else:
+        print(out)
+
+
+def cmd_path(args):
+    g = _load(args)
+    sid = _resolve(g, args.frm)
+    path, goals = queries.path_to_da(g, sid)
+    if not path:
+        print(f"(no ACL/membership path from {args.frm} to any of the {len(goals)} "
+              f"admin-equivalent principals; try a local-admin hop)")
+        return
+    for psid, label in path:
+        via = f"--{label}--> " if label else ""
+        print(f"{via}{g.name(psid)} [{g.kind(psid)}]")
+
+
+def cmd_controls(args):
+    g = _load(args)
+    sid = _resolve(g, args.principal)
+    rows = queries.controls(g, sid, max_depth=args.depth)
+    if not rows:
+        print("(no outbound object control)")
+    for depth, frm, label, to in rows:
+        print(f"{'  ' * depth}{frm} --{label}--> {to}")
+
+
+def cmd_kerberoast(args):
+    for k in queries.kerberoastable(_load(args)):
+        tag = "  [admincount]" if k["admincount"] else ""
+        print(f"{k['name']}  {','.join(k['spns'])}{tag}")
+
+
+def cmd_asrep(args):
+    for a in queries.asreproastable(_load(args)):
+        print(a["name"])
+
+
+def cmd_deleg(args):
+    d = queries.delegation(_load(args))
+    print("unconstrained: " + (", ".join(d["unconstrained"]) or "(none)"))
+    for c in d["constrained"]:
+        print(f"constrained: {c['name']} -> {', '.join(c['to'])}")
+
+
+def cmd_dcsync(args):
+    for n in queries.dcsync_principals(_load(args)):
+        print(n)
+
+
+def cmd_reachers(args):
+    g = _load(args)
+    rows = sorted(queries.who_can_reach_high_value(g).items(), key=lambda kv: (kv[1][0], g.name(kv[0])))
+    if not rows:
+        print("(nobody outside the high-value set)")
+        return
+    for sid, (hops, chain) in rows:
+        arrows = " ".join(f"{name} --{via}-->" if via else name for name, via in chain)
+        print(f"{g.name(sid)} ({hops}): {arrows}")
+
+
+def cmd_members(args):
+    g = _load(args)
+    candidates = {sid for sid in g.sid_candidates(args.group) if g.kind(sid) == "group"}
+    if len(candidates) > 1:
+        print(f"[X] ambiguous group: {args.group}", file=sys.stderr)
+        for sid in sorted(candidates):
+            print(f"    {g.qualified_name(sid)} [{sid}]", file=sys.stderr)
+        print("    use a qualified name or SID", file=sys.stderr)
+        raise SystemExit(1)
+    if candidates:
+        sid = next(iter(candidates))
+        for member in (g.by_sid[sid].get("Members") or []):
+            print(g.name(member.get("ObjectIdentifier")))
+        return
+    print(f"[X] group not found: {args.group}", file=sys.stderr)
+    raise SystemExit(1)
+
+
+def cmd_local(args):
+    g = _load(args)
+    sid = _resolve(g, args.principal)
+    rows = queries.local_admin_of(g, sid)
+    if not rows:
+        print("(none collected — computer local-group data may be missing)")
+    for name, label in rows:
+        print(f"{name} ({label})")
+
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(prog="bhq", description="Offline BloodHound JSON analyzer.")
+    sub = p.add_subparsers(dest="command", required=True)
+
+    def add(name, fn, help_):
+        s = sub.add_parser(name, help=help_)
+        s.add_argument("path", help="dir of *_users.json… or a BloodHound .zip")
+        s.set_defaults(func=fn)
+        return s
+
+    s = add("report", cmd_report, "one-shot report of the 4 AD-analysis questions")
+    s.add_argument("--from", dest="frm", help="anchor path-to-DA on this foothold principal")
+    s.add_argument("--format", choices=["text", "md", "json"], default="text", help="output format (default text)")
+    s.add_argument("-o", "--output", help="write to this file (for evidence) instead of stdout")
+
+    s = add("path", cmd_path, "shortest control path -> Domain Admins")
+    s.add_argument("frm", metavar="FROM", help="starting principal")
+
+    s = add("controls", cmd_controls, "what a principal controls")
+    s.add_argument("principal")
+    s.add_argument("-d", "--depth", type=int, default=2, help="hops to expand (default 2)")
+
+    add("kerberoast", cmd_kerberoast, "users with SPNs")
+    add("asrep", cmd_asrep, "users not requiring Kerberos pre-auth")
+    add("deleg", cmd_deleg, "delegation (unconstrained / constrained)")
+    add("dcsync", cmd_dcsync, "principals that can DCSync")
+    add("reachers", cmd_reachers, "everyone with a path to admin-equivalence")
+
+    s = add("members", cmd_members, "resolve a group's members")
+    s.add_argument("group")
+
+    s = add("local", cmd_local, "computers a principal is admin/remote on")
+    s.add_argument("principal")
+
+    return p
+
+
+def main(argv=None) -> int:
+    parser = build_parser()
+    # Every subcommand takes the collection path as its first positional, so a
+    # stray extra word is nearly always an option written positionally
+    # (`bhq report from bob`). argparse would just say "unrecognized arguments",
+    # which sends people looking in the wrong place.
+    args, extra = parser.parse_known_args(argv)
+    if extra:
+        print(f"[X] unexpected argument(s): {' '.join(extra)}\n"
+              f"    bhq {args.command} takes the collection path first; "
+              f"options are passed with -- (e.g. `bhq report ./bh --from bob`).",
+              file=sys.stderr)
+        return 2
+    args.func(args)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
