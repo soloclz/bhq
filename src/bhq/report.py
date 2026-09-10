@@ -64,6 +64,26 @@ def _coverage_line(c: dict) -> str:
     return f"users={c['users']}  groups={c['groups']}  computers={c['computers']}"
 
 
+def delegation_targets(row: dict) -> str:
+    parts = []
+    if row["to"]:
+        parts.append("SPNs: " + ", ".join(row["to"]))
+    if row.get("targets"):
+        parts.append("target objects: " + ", ".join(
+            f"{t['name']} [{t['id']}]" if t["resolved"] else f"{t['id']} [not in collection]"
+            for t in row["targets"]))
+    return "; ".join(parts)
+
+
+def _collector_lines(c: dict) -> list[str]:
+    declarations = {
+        (m.get("collectorversion", "unknown"), str(m.get("version", "unknown")),
+         str(m.get("methods", "unknown"))) for m in c.get("metadata", {}).values()
+    }
+    return [f"input declares: {collector}; schema={version}; methods={methods}"
+            for collector, version, methods in sorted(declarations)]
+
+
 def _local_coverage_line(c: dict) -> str:
     counts = "  ".join(
         f"{label}={value['attempted']}/{value['answered']}"
@@ -75,6 +95,7 @@ def _local_coverage_line(c: dict) -> str:
 def as_text(data: dict) -> str:
     c = data["collection"]
     L = ["== collection ==", _coverage_line(c)]
+    L.extend(_collector_lines(c))
     if c["computers"]:
         L.append(_local_coverage_line(c))
     warnings = data["analysis"]["warnings"]
@@ -93,7 +114,7 @@ def as_text(data: dict) -> str:
     L.append("\n== Q4 special rights ==")
     L.append("Unconstrained delegation: " + (", ".join(data["delegation"]["unconstrained"]) or "(none)"))
     for cd in data["delegation"]["constrained"]:
-        L.append(f"Constrained delegation: {cd['name']} -> {', '.join(cd['to'])}")
+        L.append(f"Constrained delegation: {cd['name']} -> {delegation_targets(cd)}")
     L.append("DCSync-capable: " + (", ".join(data["dcsync"]) or "(none)"))
     L.append("\n== high-value groups (derived, not a name list) ==")
     for hv in data["high_value_groups"]:
@@ -140,6 +161,8 @@ def as_text(data: dict) -> str:
 def as_md(data: dict) -> str:
     c = data["collection"]
     L = ["# BloodHound offline analysis", "", "## Collection", "", f"`{_coverage_line(c)}`"]
+    for line in _collector_lines(c):
+        L += ["", line]
     if c["computers"]:
         L += ["", f"`{_local_coverage_line(c)}`"]
     L += ["", "## Analysis confidence", ""]
@@ -158,7 +181,7 @@ def as_md(data: dict) -> str:
     L += ["", "## Q4 — special rights", "",
           f"- **Unconstrained delegation:** {', '.join('`%s`' % x for x in data['delegation']['unconstrained']) or '(none)'}"]
     for cd in data["delegation"]["constrained"]:
-        L.append(f"- **Constrained delegation:** `{cd['name']}` → {', '.join(cd['to'])}")
+        L.append(f"- **Constrained delegation:** `{cd['name']}` → {delegation_targets(cd)}")
     L.append(f"- **DCSync-capable:** {', '.join('`%s`' % x for x in data['dcsync']) or '(none)'}")
     L += ["", "## High-value groups (derived, not a name list)", "",
           "| group | why | members |", "|---|---|---|"]

@@ -143,6 +143,8 @@ class Graph:
         self.domain_aces: list[tuple[str, str, str]] = []  # (domain_sid, principal_sid, right)
         self.domain_sids: set[str] = set()            # SIDs of the domain objects themselves
         self.collection_files: dict[str, list[str]] = {t: [] for t in OBJECT_TYPES}
+        self.collection_metadata: dict[str, dict] = {}
+        self.unhandled_files: list[str] = []
 
     # ---- lookups -------------------------------------------------------
     def name(self, sid: str) -> str:
@@ -293,8 +295,27 @@ def _load_dir(path: str) -> Graph:
     found = False
     for t, source, blob in _iter_files(path):
         found = True
-        g.collection_files[t].append(os.path.relpath(source, path))
-        for obj in _data(blob, source):
+        relative = os.path.relpath(source, path)
+        g.collection_files[t].append(relative)
+        data = _data(blob, source)
+        if isinstance(blob, dict) and "meta" in blob:
+            meta = blob["meta"]
+            if not isinstance(meta, dict):
+                raise CollectionError(f"{source}: 'meta' must be an object")
+            if "type" in meta and meta["type"] != t:
+                raise CollectionError(f"{source}: meta.type does not match filename type {t}")
+            for field in ("count", "version", "methods"):
+                if field in meta and (type(meta[field]) is not int or meta[field] < 0):
+                    raise CollectionError(f"{source}: meta.{field} must be a non-negative integer")
+            if "count" in meta and meta["count"] != len(data):
+                raise CollectionError(f"{source}: meta.count does not match data length")
+            if "collectorversion" in meta and not isinstance(meta["collectorversion"], str):
+                raise CollectionError(f"{source}: meta.collectorversion must be a string")
+            g.collection_metadata[relative] = {
+                key: meta[key] for key in ("type", "count", "version", "methods", "collectorversion")
+                if key in meta
+            }
+        for obj in data:
             if not isinstance(obj, dict):
                 raise CollectionError(f"{source}: collection entries must be JSON objects")
             sid = obj.get("ObjectIdentifier")
@@ -313,6 +334,12 @@ def _load_dir(path: str) -> Graph:
         raise CollectionError(f"no recognised BloodHound JSON files under: {path}")
     if not any(buckets.values()):
         raise CollectionError(f"recognised BloodHound files contain no objects: {path}")
+    loaded = {name for files in g.collection_files.values() for name in files}
+    g.unhandled_files = sorted(
+        os.path.relpath(name, path)
+        for name in glob.glob(os.path.join(path, "**/*.json"), recursive=True)
+        if os.path.relpath(name, path) not in loaded
+    )
     g.users, g.groups = buckets["users"], buckets["groups"]
     g.computers, g.domains = buckets["computers"], buckets["domains"]
     # register all objects first so kind/name is known before edge building

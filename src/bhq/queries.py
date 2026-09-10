@@ -40,6 +40,7 @@ ANALYSIS_SCOPE = {
         "GPO links and OU inheritance",
         "AD CS certificate attack paths",
         "interactive sessions",
+        "RBCD, SID history, and user rights",
         "edge exploitation preconditions",
         "Entra ID and hybrid identity",
     ],
@@ -80,8 +81,16 @@ def delegation(g: Graph) -> dict:
         if p.get("unconstraineddelegation"):
             unconstrained.append(p.get("samaccountname"))
         atd = p.get("allowedtodelegate") or []
-        if atd:
-            constrained.append({"name": p.get("samaccountname"), "to": atd})
+        targets = []
+        for target in obj.get("AllowedToDelegate") or []:
+            identifier = target.get("ObjectIdentifier")
+            if identifier:
+                targets.append({"id": identifier, "name": g.qualified_name(identifier),
+                                "type": target.get("ObjectType"),
+                                "resolved": identifier in g.by_sid})
+        if atd or targets:
+            constrained.append({"name": p.get("samaccountname") or p.get("name"),
+                                "to": atd, "targets": targets})
     return {"unconstrained": unconstrained, "constrained": constrained}
 
 
@@ -260,16 +269,11 @@ def _transitive_groups(g: Graph, sid: str) -> set[str]:
 
 
 def coverage(g: Graph) -> dict:
-    """How complete is the collection, per local-access capability, in three states:
+    """Summarize recorded local-group flags and members, not network attempts.
 
-      total - attempted   the collector never asked (method off, host unresolved
-                          or unreachable) — those edges are unknown
-      attempted - answered  it asked and got nothing back. If the collector filled
-                          `FailureReason` the diagnostics name it; bloodhound.py
-                          leaves it empty in both collector lines, and then a refused
-                          SAMR query and a genuinely empty group are indistinguishable
-                          here — read it as unknown, not zero
-      answered            it asked and members came back
+    `attempted` is the historical label for Collected=true; `answered` counts
+    computers with recorded members. Missing/false flags can also represent
+    failures, and an empty result without FailureReason remains ambiguous.
     """
     total = len(g.computers)
     answered: dict[str, set[str]] = {label: set() for label in g.local_collection_status}
@@ -288,12 +292,24 @@ def coverage(g: Graph) -> dict:
         "users": len(g.users), "groups": len(g.groups), "computers": total,
         "local_collections": local,
         "files": {kind: len(files) for kind, files in g.collection_files.items() if files},
+        "metadata": g.collection_metadata,
+        "unhandled_files": g.unhandled_files,
     }
 
 
 def diagnostics(g: Graph) -> list[str]:
     """Runtime limitations that must accompany negative findings."""
     warnings = []
+    if g.unhandled_files:
+        warnings.append("JSON files not analyzed: " + ", ".join(g.unhandled_files))
+    unknown_versions = sorted({m["version"] for m in g.collection_metadata.values()
+                               if "version" in m and m["version"] not in (4, 5, 6)})
+    if unknown_versions:
+        warnings.append(f"unverified JSON schema versions: {unknown_versions}; loading known fields does not establish compatibility")
+    if any(m.get("collectorversion") == "RustHound-CE v2.5.12"
+           for m in g.collection_metadata.values()):
+        warnings.append("RustHound-CE v2.5.12 writes meta.methods=0 for every mode and omits empty collections; "
+                        "retain the collection command and logs to distinguish mode, omissions, and failures")
     if not g.users:
         warnings.append("users collection is missing or empty; roast and user-path results are incomplete")
     if not g.groups:
@@ -333,6 +349,30 @@ def diagnostics(g: Graph) -> list[str]:
             f"{len(g.domains)} domains loaded, but trust traversal is not modeled; "
             "use a SID or qualified name for ambiguous principals"
         )
+    if any(obj.get("Trusts") for obj in g.domains):
+        warnings.append("Trusts are present in domain objects but trust traversal is not analyzed")
+    for label, failures in g.local_failures.items():
+        for sid, reason in sorted(failures.items()):
+            if not g.local_collection_status[label].get(sid):
+                warnings.append(f"{label} on {g.qualified_name(sid)} reported FailureReason with Collected=false: {reason}")
+    unmodeled = {
+        "AllowedToAct": "RBCD",
+        "HasSIDHistory": "SID history",
+        "UserRights": "user rights",
+    }
+    for field, label in unmodeled.items():
+        count = sum(bool(obj.get(field)) for obj in g.objects)
+        if count:
+            warnings.append(f"{label}: {field} is populated on {count} objects but is not analyzed")
+    sessions = sum(any((obj.get(field) or {}).get("Results") for field in
+                       ("Sessions", "PrivilegedSessions", "RegistrySessions")) for obj in g.computers)
+    if sessions:
+        warnings.append(f"session results are present on {sessions} computers but are not analyzed")
+    gpo_changes = sum(any((obj.get("GPOChanges") or {}).get(field) for field in
+                         ("LocalAdmins", "RemoteDesktopUsers", "DcomUsers", "PSRemoteUsers"))
+                      for obj in g.objects)
+    if gpo_changes:
+        warnings.append(f"GPOChanges contains local-group relationships on {gpo_changes} objects but is not analyzed")
     kinds = {g.kind(sid) for sid in g.by_sid}
     if "gpo" in kinds or "ou" in kinds:
         warnings.append("GPO/OU objects are loaded, but policy links and OU inheritance are not modeled")

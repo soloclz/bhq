@@ -103,7 +103,7 @@ def cmd_deleg(args):
     d = queries.delegation(_load(args))
     print("unconstrained: " + (", ".join(d["unconstrained"]) or "(none)"))
     for c in d["constrained"]:
-        print(f"constrained: {c['name']} -> {', '.join(c['to'])}")
+        print(f"constrained: {c['name']} -> {report.delegation_targets(c)}")
 
 
 def cmd_dcsync(args):

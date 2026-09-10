@@ -65,12 +65,15 @@ All fixtures in `tests/` are synthetic; no engagement collection is included.
 | Legacy local-group fields (`LocalAdmins`, `RemoteDesktopUsers`, etc.) | Synthetic fixtures exercise loading and queries |
 | CE `LocalGroups` layout | Synthetic fixtures exercise all four local-access mappings and failure reporting |
 | SharpHound / bloodhound-python / bloodhound-ce-python | Intended input families; no version-pinned end-to-end compatibility matrix yet |
-| RustHound-CE | Planned primary collector; real output compatibility has not yet been verified |
+| RustHound-CE v2.5.12 | Source reviewed at a pinned commit; reduced synthetic fixtures exercise metadata, core queries, delegation targets, and unsupported-data warnings. Live collection remains unverified. See [details](docs/rusthound-ce.md). |
 
-The loader uses filenames and object fields, not `meta.version`, to select data.
-It does not validate the complete upstream schema. Successfully reading a ZIP
-does not establish complete collector support. Only users, groups, computers,
-domains, GPOs, OUs, and containers are loaded; other file types are not analyzed.
+The loader uses filenames and object fields to select data. When `meta` is
+present, its type and count must agree with the file; declared collector, schema,
+and methods are retained in JSON reports and summarized in text/Markdown.
+Unverified schema versions produce a warning. This is not complete schema
+validation or proof of collection completeness. Only users, groups, computers,
+domains, GPOs, OUs, and containers are loaded; other JSON filenames are reported
+as not analyzed. Empty or missing metadata does not identify the collector.
 
 References: [BloodHound JSON formats](https://bloodhound.specterops.io/integrations/bloodhound-api/json-formats),
 [RustHound-CE](https://github.com/g0h4n/RustHound-CE).
@@ -85,6 +88,10 @@ References: [BloodHound JSON formats](https://bloodhound.specterops.io/integrati
   authentication requirements, and environmental preconditions are not evaluated
   for each edge. Rights such as `GenericWrite` do not mean the same operation is
   available on every target.
+- **Delegation target objects are not SPNs.** `delegation.constrained[].to`
+  retains raw `Properties.allowedtodelegate` values; `targets` separately reports
+  `AllowedToDelegate` object IDs, names, types, and whether they resolve in the
+  loaded collection. Target objects do not establish a service name or port.
 - **The goal set is broader than Domain Admins.** It includes selected well-known
   RIDs, principals with recorded domain-control or replication rights, and the
   named group `DnsAdmins`. Reaching a goal does not prove Domain Admin membership

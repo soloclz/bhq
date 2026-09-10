@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "bhq"
-version = "0.1.1"
+version = "0.1.2"
 description = "Offline BloodHound JSON analyzer — attack-path queries without the GUI"
 readme = "README.md"
 license = "MIT"
