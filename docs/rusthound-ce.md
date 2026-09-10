@@ -22,7 +22,7 @@ not complete collector documents or a copied engagement collection.
 | Users, groups, computers, domains use `Properties`, `Aces`, `Members`, and `ObjectIdentifier` | Fixtures check account queries, group membership, ACL edges, and replication grants combined through recorded membership |
 | User/computer `AllowedToDelegate` contains target objects | Reads these separately from raw SPNs in `Properties.allowedtodelegate` |
 | Checker replaces known target FQDNs with SIDs and retains unresolved identifiers | Resolves loaded targets to names; preserves unknown identifiers without inventing SPNs |
-| Six additional AD CS collection types can be emitted | Lists their filenames as not analyzed; does not build AD CS paths |
+| Six additional AD CS collection types can be emitted | Loads all six; analyzes recorded template conditions, grants, publication and certificate/policy references; no automatic DA edge |
 
 Source references:
 [writer](https://github.com/g0h4n/RustHound-CE/blob/aeb28db95f0149a1579c2517536083e150ae2803/src/json/maker/common.rs),
@@ -37,17 +37,18 @@ Source references:
 
 - `LocalGroups` is declared but the reviewed collection pipeline leaves it empty.
   GPO-derived local groups are instead written to domain/OU `GPOChanges`, and
-  GPO-derived user rights to computer `UserRights`. bhq warns when these fields
-  contain relationships; it does not treat them as direct local-group observations.
+  GPO-derived user rights to computer `UserRights`. `policy` and `user-rights` expose these fields; conditional routes distinguish
+  GPOChanges projections from direct local-group observations.
 - Empty session structures default to `Collected: true`. An empty session result
-  does not establish that the session module ran. Populated session results are
-  flagged as not analyzed; sessions are not added to the path graph.
+  does not establish that the session module ran. `sessions` preserves populated results and collection state; consistent confirmed
+  entries can contribute conditional routes, without proving interactive logon
+  or usable credential material.
 - In this version, `DCOnly` includes DC SYSVOL access; `LdapOnly` excludes it.
   Preserve the actual command and logs rather than interpreting `methods: 0` or
   assuming that all modes named DCOnly have identical behavior across collectors.
 - `AllowedToAct` is exposed as recorded RBCD configuration, and `Trusts` as raw
-  fields associated with the source domain. Neither contributes path edges.
-  Direct GPO/OU/container ACLs are loaded, but policy effects are not derived.
+  fields associated with the source domain. Trust traversal remains unmodeled. RBCD can contribute conditional host
+  transitions; direct GPO ACLs can connect to candidate policy scope.
   `HasSIDHistory`, `UserRights`, populated sessions, and GPO-derived local groups
   remain unmodeled; notices are not a complete inventory of every unused field.
 

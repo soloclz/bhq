@@ -21,6 +21,12 @@ Each command takes the collection path first. `report` combines these queries.
 Results are leads for validation, not proof that an account can be compromised or
 that a printed path can be executed.
 
+Additional recorded data: `sessions`, `access`, `policy`, `sid-history`,
+`user-rights`, and `adcs --from <principal>`. `coverage --raw-only` lists fields
+without a dedicated query outlet. `route` joins conditional relationships with
+separate account/object/host states and evidence per transition.
+See [analysis and examples](docs/analysis.md).
+
 ## Install
 
 Python 3.10 or newer is required. There are no runtime dependencies.
@@ -77,20 +83,20 @@ The loader uses filenames and object fields to select data. When `meta` is
 present, its type and count must agree with the file; declared collector, schema,
 and methods are retained in JSON reports and summarized in text/Markdown.
 Unverified schema versions produce a warning. This is not complete schema
-validation or proof of collection completeness. Only users, groups, computers,
-domains, GPOs, OUs, and containers are loaded; other JSON filenames are reported
-as not analyzed. Empty or missing metadata does not identify the collector.
+validation or proof of collection completeness. Users, groups, computers, domains, GPOs, OUs, containers and six AD CS object
+types are loaded; other JSON filenames are reported as not analyzed. Empty or missing metadata does not identify the collector.
 
 References: [BloodHound JSON formats](https://bloodhound.specterops.io/integrations/bloodhound-api/json-formats),
 [RustHound-CE](https://github.com/g0h4n/RustHound-CE).
 
 ## Interpretation limits
 
-- **Paths use ACL object-control and group-membership edges.** Local access and
-  delegation are reported separately. Direct ACLs on GPOs, OUs, and containers
-  are included in `controls`, without deriving their policy effects. Trust traversal, GPO links and OU
-  inheritance, AD CS paths, interactive sessions, and Entra/hybrid identity are
-  not modeled. An empty result does not establish that no attack path exists.
+- **`path` uses ACL object-control and group-membership edges.** `route` is a
+  separate conditional model that can join confirmed local-group observations,
+  recorded sessions, resolved delegation/RBCD, SID-history grants and candidate
+  policy effects. Every transition has source evidence and unmet requirements;
+  computer-account control is distinct from host administration. Reports keep
+  both results. Empty results do not establish the absence of a route.
 - **A path is not an execution plan.** Object type, effective permissions,
   authentication requirements, and environmental preconditions are not evaluated
   for each edge. Rights such as `GenericWrite` do not mean the same operation is
@@ -100,7 +106,8 @@ References: [BloodHound JSON formats](https://bloodhound.specterops.io/integrati
   `AllowedToDelegate` object IDs, names, types, and whether they resolve in the
   loaded collection. Target objects do not establish a service name or port.
   `delegation.rbcd` lists configured `AllowedToAct` principals for each target;
-  it does not prove control of those principals or create executable RBCD paths.
+  it does not prove control of those principals. `route` can use this configuration
+  as a conditional transition with explicit prerequisites.
 - **Trust direction is relative to the source domain.** `trusts` preserves the
   collector's field names and values; false stays false and unrecorded fields
   display as null. A trust record does not verify connectivity, authentication,
@@ -156,6 +163,14 @@ from negative findings when adding support for a collector or relationship.
 
 MIT. See [LICENSE](LICENSE).
 
+## Output additions in 0.3
+
+Reports add `extended` (sessions, access, SID history, user rights, policy, AD CS,
+field coverage) and, when a starting principal resolves, `candidate_route`.
+The 0.2 `path` result remains separate and unchanged in scope. New CLI commands
+accept `--format json`; no schema conversion or network service is required.
+See [conditional model and limits](docs/analysis.md).
+
 ## Output changes in 0.2
 
 JSON reports replace the misleading `path_to_da` key with `path` and add `goal`.
@@ -169,8 +184,8 @@ The Python `path_to_da()` helper now means Domain Admins specifically; use
 
 | Area | What is still required |
 |---|---|
-| Local access and sessions | Supplement collector gaps and validate access; these relationships are not joined into paths |
-| GPO effects | Evaluate links, inheritance, filtering and actual application; direct GPO ACLs alone do not establish affected hosts |
-| AD CS | Use a separate analyzer; bhq only identifies unhandled AD CS filenames |
+| Local access and sessions | Conditional routes now join recorded relationships; verify current effective access, logon type and credential availability |
+| GPO effects | Candidate scope handles recorded containment and inheritance; filtering, enabled state, precedence and actual application still require confirmation |
+| AD CS | Recorded conditions, grants and publication are analyzed; full ESC coverage, certificate-chain validation and live CA behavior need additional analysis |
 | Shares, SYSVOL file contents, services and live authentication | Separate protocol-specific enumeration and verification |
 | Full collector compatibility | Real lab output and comparisons with known configuration; synthetic fixtures cover selected cases only |
