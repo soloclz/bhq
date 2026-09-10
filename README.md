@@ -44,7 +44,7 @@ installing, run `PYTHONPATH=src python3 -m bhq --help` from the checkout.
 bhq report ./collection --from alice
 bhq report ./collection --from alice --format md -o report.md
 bhq report ./collection --format json -o report.json
-bhq path ./collection.zip alice
+bhq path ./collection.zip alice --goal da
 bhq controls ./collection "SRVADMINS@TEST.LOCAL" -d 3
 bhq members ./collection "DOMAIN ADMINS@TEST.LOCAL"
 bhq local ./collection alice
@@ -95,8 +95,10 @@ References: [BloodHound JSON formats](https://bloodhound.specterops.io/integrati
 - **The goal set is broader than Domain Admins.** It includes selected well-known
   RIDs, principals with recorded domain-control or replication rights, and the
   named group `DnsAdmins`. Reaching a goal does not prove Domain Admin membership
-  or equivalent capability. The `path_to_da` JSON key and some CLI labels retain
-  their historical names; inspect the actual endpoint and reason.
+  or equivalent capability. `path`, `reachers`, and `report` default to the
+  explicit `high-value` goal. Use `--goal da` for loaded Domain Admins groups
+  identified by domain SID and RID 512. Reports include the selected goal and
+  endpoint reason; an existing goal is a valid zero-hop path.
 - **DCSync findings combine directly recorded rights only for the same principal
   on the same domain object.** Rights on different domains are never combined.
   Rights distributed across a user's groups are not aggregated into effective
@@ -125,3 +127,9 @@ from negative findings when adding support for a collector or relationship.
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+## Output changes in 0.2
+
+JSON reports replace the misleading `path_to_da` key with `path` and add `goal`.
+The Python `path_to_da()` helper now means Domain Admins specifically; use
+`path_to_goal()` for the default high-value target set.

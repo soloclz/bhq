@@ -1,13 +1,13 @@
 """`bhq` — offline BloodHound analysis CLI.
 
-    bhq report <path> [--from hporter]     one-shot: the 4 questions (+ path to DA)
-    bhq path   <path> <from>               shortest control path -> Domain Admins
+    bhq report <path> [--from hporter]     combined queries and collection limits
+    bhq path   <path> <from>               shortest recorded path -> selected targets
     bhq controls <path> <principal> [-d N] what a principal controls (N hops)
     bhq kerberoast <path>                  users with SPNs
     bhq asrep <path>                       users not requiring pre-auth
     bhq deleg <path>                       delegation (unconstrained / constrained)
     bhq dcsync <path>                      principals that can DCSync
-    bhq reachers <path>                    everyone with a path to admin-equivalence
+    bhq reachers <path>                    everyone with a path to high-value targets
     bhq members <path> <group>            resolve a group's members
     bhq local <path> <principal>          computers the principal is admin/remote on
 
@@ -56,7 +56,7 @@ def _resolve(g, name):
 
 
 def cmd_report(args):
-    out = report.render(_load(args), args.frm, fmt=args.format)
+    out = report.render(_load(args), args.frm, fmt=args.format, goal=args.goal)
     if args.output:
         with open(args.output, "w", encoding="utf-8") as fh:
             fh.write(out if out.endswith("\n") else out + "\n")
@@ -68,11 +68,12 @@ def cmd_report(args):
 def cmd_path(args):
     g = _load(args)
     sid = _resolve(g, args.frm)
-    path, goals = queries.path_to_da(g, sid)
+    path, goals = queries.path_to_goal(g, sid, args.goal)
+    print(f"goal: {args.goal} ({len(goals)} loaded targets); recorded ACL/membership paths only")
     if not path:
-        print(f"(no ACL/membership path from {args.frm} to any of the {len(goals)} "
-              f"admin-equivalent principals; try a local-admin hop)")
+        print(f"(no recorded path from {args.frm}; collection and model limits still apply)")
         return
+    print(f"endpoint reason: {queries.goal_sids(g, args.goal)[path[-1][0]]}")
     for psid, label in path:
         via = f"--{label}--> " if label else ""
         print(f"{via}{g.name(psid)} [{g.kind(psid)}]")
@@ -113,9 +114,10 @@ def cmd_dcsync(args):
 
 def cmd_reachers(args):
     g = _load(args)
-    rows = sorted(queries.who_can_reach_high_value(g).items(), key=lambda kv: (kv[1][0], g.name(kv[0])))
+    print(f"goal: {args.goal}; recorded ACL/membership paths only")
+    rows = sorted(queries.who_can_reach_high_value(g, args.goal).items(), key=lambda kv: (kv[1][0], g.name(kv[0])))
     if not rows:
-        print("(nobody outside the high-value set)")
+        print("(no recorded paths from outside the selected goal set)")
         return
     for sid, (hops, chain) in rows:
         arrows = " ".join(f"{name} --{via}-->" if via else name for name, via in chain)
@@ -160,13 +162,15 @@ def build_parser() -> argparse.ArgumentParser:
         s.set_defaults(func=fn)
         return s
 
-    s = add("report", cmd_report, "one-shot report of the 4 AD-analysis questions")
-    s.add_argument("--from", dest="frm", help="anchor path-to-DA on this foothold principal")
+    s = add("report", cmd_report, "combined AD analysis and collection limits")
+    s.add_argument("--from", dest="frm", help="starting principal for path and control queries")
+    s.add_argument("--goal", choices=["high-value", "da"], default="high-value")
     s.add_argument("--format", choices=["text", "md", "json"], default="text", help="output format (default text)")
     s.add_argument("-o", "--output", help="write to this file (for evidence) instead of stdout")
 
-    s = add("path", cmd_path, "shortest control path -> Domain Admins")
+    s = add("path", cmd_path, "shortest recorded path to selected targets")
     s.add_argument("frm", metavar="FROM", help="starting principal")
+    s.add_argument("--goal", choices=["high-value", "da"], default="high-value")
 
     s = add("controls", cmd_controls, "what a principal controls")
     s.add_argument("principal")
@@ -176,7 +180,8 @@ def build_parser() -> argparse.ArgumentParser:
     add("asrep", cmd_asrep, "users not requiring Kerberos pre-auth")
     add("deleg", cmd_deleg, "delegation (unconstrained / constrained)")
     add("dcsync", cmd_dcsync, "principals that can DCSync")
-    add("reachers", cmd_reachers, "everyone with a path to admin-equivalence")
+    s = add("reachers", cmd_reachers, "principals with recorded paths to selected targets")
+    s.add_argument("--goal", choices=["high-value", "da"], default="high-value")
 
     s = add("members", cmd_members, "resolve a group's members")
     s.add_argument("group")

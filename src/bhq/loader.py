@@ -32,7 +32,7 @@ CONTROL_RIGHTS = {
 }
 # Replication rights on the domain object -> DCSync.
 DCSYNC_RIGHTS = {"GetChanges", "GetChangesAll", "GetChangesInFilteredSet", "DCSync"}
-# Well-known RIDs of admin-equivalent principals. These are fixed by Microsoft and
+# Well-known RIDs of high-value principals. These are fixed by Microsoft and
 # identical in every forest, unlike the *display names*, which are localised — a
 # non-English install renames the groups but keeps the RID. Match on these, never
 # on names. (S-1-5-32-<RID> for BUILTIN aliases, <domainSID>-<RID> for domain groups.)

@@ -14,8 +14,9 @@ from . import queries
 from .loader import Graph
 
 
-def build(g: Graph, start_name: str | None = None) -> dict:
+def build(g: Graph, start_name: str | None = None, goal: str = "high-value") -> dict:
     data: dict = {
+        "goal": goal,
         "collection": queries.coverage(g),
         "analysis": {
             "scope": queries.ANALYSIS_SCOPE,
@@ -33,7 +34,7 @@ def build(g: Graph, start_name: str | None = None) -> dict:
             {"name": g.name(sid), "hops": hops,
              "path": [{"name": n, "via": via} for n, via in chain]}
             for sid, (hops, chain) in sorted(
-                queries.who_can_reach_high_value(g).items(), key=lambda kv: (kv[1][0], g.name(kv[0])))
+                queries.who_can_reach_high_value(g, goal).items(), key=lambda kv: (kv[1][0], g.name(kv[0])))
         ],
         "from": start_name,
     }
@@ -47,9 +48,10 @@ def build(g: Graph, start_name: str | None = None) -> dict:
             else:
                 data["error"] = f"principal not found: {start_name}"
             return data
-        path, goals = queries.path_to_da(g, sid)
-        data["path_to_da"] = {
+        path, goals = queries.path_to_goal(g, sid, goal)
+        data["path"] = {
             "goals": goals,
+            "endpoint_reason": queries.goal_sids(g, goal).get(path[-1][0]) if path else None,
             "path": [{"name": g.name(s), "kind": g.kind(s), "via": lbl} for s, lbl in path] if path else None,
         }
         data["controls"] = [
@@ -128,9 +130,9 @@ def as_text(data: dict) -> str:
             L.append(f"{hv['group']} [{hv['why']}] (0 — privilege granted but no members; "
                      f"invisible to membership audits, live to anyone who can write `member`)")
     r = data["reachers"]
-    L.append(f"\n== who can reach admin-equivalence ({len(r)}) ==")
+    L.append(f"\n== who can reach {data['goal']} targets ({len(r)}) ==")
     if not r:
-        L.append("  (nobody outside the high-value set)")
+        L.append("  (no recorded paths from outside the selected goal set)")
     for row in r:
         arrows = " ".join(
             (f"{h['name']} --{h['via']}-->" if h["via"] else h["name"]) for h in row["path"])
@@ -140,15 +142,15 @@ def as_text(data: dict) -> str:
         if data.get("error"):
             L.append(f"  ! {data['error']}")
             return "\n".join(L)
-        p = data["path_to_da"]
-        L.append(f"Shortest path to admin-equivalence ({len(p['goals'])} goals) "
-                 f"— the last hop names which one:")
+        p = data["path"]
+        L.append(f"Shortest path to {data['goal']} targets ({len(p['goals'])} goals) "
+                 f"— endpoint reason: {p['endpoint_reason']}:")
         if p["path"]:
             for hop in p["path"]:
                 via = f"  --{hop['via']}-->" if hop["via"] else ""
                 L.append(f"  {via} {hop['name']} [{hop['kind']}]")
         else:
-            L.append("  (no ACL/membership path — likely needs a local-admin hop; see Q3)")
+            L.append("  (no recorded ACL/membership path; collection and model limits still apply)")
         L.append("Outbound control (<=2 hops):")
         for r in data["controls"] or []:
             L.append(f"  {'  ' * r['depth']}{r['from']} --{r['edge']}--> {r['to']}")
@@ -191,9 +193,9 @@ def as_md(data: dict) -> str:
             members = ("_(none)_" if hv["why"] == "well-known-admin-rid"
                        else "_(none — privilege live but invisible to membership audits)_")
         L.append(f"| `{hv['group']}` | {hv['why']} | {members} |")
-    L += ["", f"## Who can reach admin-equivalence ({len(data['reachers'])})", ""]
+    L += ["", f"## Who can reach {data['goal']} targets ({len(data['reachers'])})", ""]
     if not data["reachers"]:
-        L.append("_(nobody outside the high-value set)_")
+        L.append("_(no recorded paths from outside the selected goal set)_")
     for row in data["reachers"]:
         arrows = " ".join(
             (f"`{h['name']}` —{h['via']}→" if h["via"] else f"`{h['name']}`") for h in row["path"])
@@ -204,8 +206,8 @@ def as_md(data: dict) -> str:
         if data.get("error"):
             L.append(f"> {data['error']}")
             return "\n".join(L)
-        p = data["path_to_da"]
-        L += ["", f"**Shortest path to admin-equivalence** ({len(p['goals'])} goals; "
+        p = data["path"]
+        L += ["", f"**Shortest path to {data['goal']} targets** ({len(p['goals'])} goals; "
               f"the last hop names which one):", ""]
         if p["path"]:
             parts = [
@@ -214,7 +216,7 @@ def as_md(data: dict) -> str:
             ]
             L.append("> " + " ".join(parts))
         else:
-            L.append("> (no ACL/membership path — likely needs a local-admin hop; see Q3)")
+            L.append("> (no recorded ACL/membership path; collection and model limits still apply)")
         L += ["", "**Outbound control (≤2 hops):**", ""]
         if data["controls"]:
             for r in data["controls"]:
@@ -232,5 +234,5 @@ def as_json(data: dict) -> str:
 RENDERERS = {"text": as_text, "md": as_md, "json": as_json}
 
 
-def render(g: Graph, start_name: str | None = None, fmt: str = "text") -> str:
-    return RENDERERS[fmt](build(g, start_name))
+def render(g: Graph, start_name: str | None = None, fmt: str = "text", goal: str = "high-value") -> str:
+    return RENDERERS[fmt](build(g, start_name, goal))

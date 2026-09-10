@@ -115,10 +115,7 @@ def dcsync_principals(g: Graph) -> list[str]:
 
 
 def high_value_sids(g: Graph) -> dict[str, str]:
-    """Every principal that is admin-equivalent, mapped to *why*. This replaces
-    what used to be a hard-coded list of group names — a list can only hold names
-    someone thought of in advance, so it structurally misses the custom groups an
-    admin invented, which is exactly where over-permissive rights accumulate."""
+    """Investigation targets and their reasons, not a claim of DA equivalence."""
     out: dict[str, str] = {}
     for sid in g.by_sid:
         if g.kind(sid) in ("user", "group") and rid_of(sid) in WELL_KNOWN_ADMIN_RIDS:
@@ -135,6 +132,15 @@ def high_value_sids(g: Graph) -> dict[str, str]:
         if sid and name in NAMED_HIGH_VALUE_GROUPS:
             out.setdefault(sid, "named-privileged-group")
     return out
+
+
+def goal_sids(g: Graph, goal: str = "high-value") -> dict[str, str]:
+    if goal == "high-value":
+        return high_value_sids(g)
+    if goal == "da":
+        return {f"{domain}-512": "domain-admins-group" for domain in g.domain_sids
+                if g.kind(f"{domain}-512") == "group"}
+    raise ValueError(f"unknown path goal: {goal}")
 
 
 def high_value_members(g: Graph) -> list[tuple[str, list[str], str]]:
@@ -181,7 +187,7 @@ def shortest_path(g: Graph, start_sid: str, goal_sids: set[str]) -> list[tuple[s
     goal = None
     while q:
         cur = q.popleft()
-        if cur in goal_sids and cur != start_sid:
+        if cur in goal_sids:
             goal = cur
             break
         nexts = [(t, r) for (t, r) in g.control_edges.get(cur, [])]
@@ -201,25 +207,20 @@ def shortest_path(g: Graph, start_sid: str, goal_sids: set[str]) -> list[tuple[s
     return list(reversed(chain))
 
 
-def path_to_da(g: Graph, start_sid: str) -> tuple[list[tuple[str, str]] | None, list[str]]:
-    """Shortest path from start to any admin-equivalent principal.
-
-    The goal set comes from high_value_sids(), so a custom group that was granted
-    DCSync counts as arriving — reaching it *is* domain compromise, even though it
-    is not a member of Domain Admins and may have no members at all."""
-    goals = high_value_sids(g)
+def path_to_goal(g: Graph, start_sid: str, goal: str = "high-value") -> tuple[list[tuple[str, str]] | None, list[str]]:
+    """Shortest recorded ACL/membership path to the explicitly selected goal set."""
+    goals = goal_sids(g, goal)
     return shortest_path(g, start_sid, set(goals)), sorted(g.name(s) for s in goals)
 
 
-def who_can_reach_high_value(g: Graph) -> dict[str, tuple[int, list[tuple[str, str]]]]:
-    """One backward BFS from the whole goal set over the reversed graph, giving
-    every principal that can reach admin-equivalence plus the path it would take.
+def path_to_da(g: Graph, start_sid: str) -> tuple[list[tuple[str, str]] | None, list[str]]:
+    """Shortest recorded path specifically to a loaded Domain Admins group."""
+    return path_to_goal(g, start_sid, "da")
 
-    Backwards, because the goals are few and the answer is wanted for everyone:
-    one traversal replaces one-BFS-per-foothold, and it also answers the question
-    the defender asks — *who in this domain can get to DA* — which forward search
-    from a chosen foothold can never produce."""
-    goals = high_value_sids(g)
+
+def who_can_reach_high_value(g: Graph, goal: str = "high-value") -> dict[str, tuple[int, list[tuple[str, str]]]]:
+    """Reverse BFS to selected goals; principals already in that set are excluded."""
+    goals = goal_sids(g, goal)
     dist: dict[str, int] = {s: 0 for s in goals}
     prev: dict[str, tuple[str, str]] = {}
     q = deque(goals)

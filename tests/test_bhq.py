@@ -281,7 +281,7 @@ def test_path_reaches_custom_dcsync_group(tmp_path):
     memberless group that can DCSync. The old name-keyed goal set returned None."""
     _write(tmp_path)
     g = load(str(tmp_path))
-    path, _ = queries.path_to_da(g, DAVE)
+    path, _ = queries.path_to_goal(g, DAVE)
     assert path is not None
     assert [g.name(sid) for sid, _ in path] == ["dave", "carol", "SRVADMINS@TEST.LOCAL"]
     assert [lbl for _, lbl in path] == [None, "GenericWrite", "GenericAll"]
@@ -334,7 +334,7 @@ def test_report_formats(tmp_path):
     # json round-trips and carries the structured findings
     data = json.loads(report.render(g, "alice", fmt="json"))
     assert data["dcsync"] == ["SRVADMINS@TEST.LOCAL", "alice"]
-    assert data["path_to_da"]["path"][0]["name"] == "alice"
+    assert data["path"]["path"][0]["name"] == "alice"
     assert any(k["name"] == "alice" for k in data["kerberoastable"])
     assert "scope" in data["analysis"]
     assert any("attempted on 0/1 computers" in w and "unknown, not absent" in w

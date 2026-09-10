@@ -4,7 +4,7 @@ Answers the recurring AD-analysis questions from raw SharpHound / bloodhound-pyt
 bloodhound-ce-python JSON, without standing up neo4j + the BloodHound GUI:
 
   1. what can I crack offline?        -> kerberoastable / asreproastable
-  2. what do I (or my groups) control? -> ACL outbound edges, path to admin-equivalence
+  2. what do I (or my groups) control? -> ACL outbound edges, path to high-value targets
   3. where am I local admin / remote?  -> AdminTo / CanRDP / CanPSRemote (if collected)
   4. any special high-value rights?    -> delegation, DCSync
   5. who can reach high value?         -> one reverse graph traversal
