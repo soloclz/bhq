@@ -1,14 +1,50 @@
 # RustHound-CE v2.5.12 compatibility
 
-Status: source review and reduced synthetic fixtures. No live AD collection,
-upstream serializer execution, or BloodHound CE ingestion comparison has been
-performed. This page describes the reviewed version only.
+Status: source review, reduced synthetic fixtures, and an authorized private lab
+dump regression on Kali (2026-09-14). No live collection was initiated by this
+test, and no upstream serializer execution or BloodHound CE ingestion comparison
+was performed. The private JSON files are not stored in this repository.
 
 Upstream tag: `v2.5.12`.
 Commit: `aeb28db95f0149a1579c2517536083e150ae2803`.
 Fixtures: [`tests/test_rusthound.py`](../tests/test_rusthound.py). All names and
 identifiers are invented. They are handwritten excerpts of relevant fields,
 not complete collector documents or a copied engagement collection.
+
+## Builtin group placeholder collisions
+
+RustHound-CE 2.5.12 and 2.5.13 append default builtin groups even when LDAP has
+already supplied the same ObjectIdentifier. The reviewed `group.rs`, `sid.rs`,
+checker entry point and `checker/common.rs` are byte-identical between these tags.
+See the [2.5.13 checker](https://github.com/g0h4n/RustHound-CE/blob/v2.5.13/src/json/checker/common.rs)
+and [group defaults](https://github.com/g0h4n/RustHound-CE/blob/v2.5.13/src/objects/group.rs).
+This is not evidence of mixed collection snapshots by itself.
+
+bhq recognizes exactly one actual record plus one source-matching empty default
+for builtin RIDs 544, 548, 550, 554, 557, 560 and 561 within the same groups file.
+It requires schema 6 and one of the two reviewed collectorversion strings. These
+labels identify a compatibility rule, not proof of collector authenticity.
+The actual record must identify a live builtin group in the matching domain;
+the default must match the complete known shape, with no ACEs, members or extra
+fields. WAAG's empty domain property is a specific upstream default.
+
+The actual object is kept unchanged, regardless of record order. Normalizations
+are recorded in `Graph.collection_normalizations` with the source file and
+zero-based record indices, and shown in report diagnostics. Raw metadata counts
+remain the original file counts, not the normalized graph counts. Files on disk
+are never rewritten. Standalone defaults remain available; this is not a generic
+deduplication or edge-union policy. Different files, unsupported versions,
+multiple actual records, nonempty defaults and unknown fields still fail closed.
+Conflicting records within one file now produce a distinct error from duplicates
+across files.
+
+[`tests/test_rusthound_duplicates.py`](../tests/test_rusthound_duplicates.py)
+uses only invented records and includes order, ZIP, version and conflict cases.
+On the private 2.5.12 lab dump, the original loader failed on seven duplicate
+builtin IDs. The corrected loader retained every actual group unchanged and
+passed the full report CLI; all 13 original JSON checksums were unchanged.
+The dump was not recollected with 2.5.13: that version's claim is source and
+synthetic-test compatibility for this specific behavior, not a new live lab run.
 
 ## Output contract and handling
 

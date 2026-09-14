@@ -148,6 +148,7 @@ class Graph:
         self.collection_files: dict[str, list[str]] = {t: [] for t in OBJECT_TYPES}
         self.collection_metadata: dict[str, dict] = {}
         self.unhandled_files: list[str] = []
+        self.collection_normalizations: list[dict] = []
 
     # ---- lookups -------------------------------------------------------
     def name(self, sid: str) -> str:
@@ -334,11 +335,18 @@ def _load_dir(path: str) -> Graph:
                 raise CollectionError(f"{source}: collection entry has no valid ObjectIdentifier")
             from .analysis.schema import validate
             validate(obj, relative)
+        if t == "groups":
+            from ._rusthound import normalize_groups
+            data, notices = normalize_groups(data, g.collection_metadata.get(relative, {}), relative)
+            g.collection_normalizations.extend(notices)
+        for obj in data:
+            sid = obj["ObjectIdentifier"]
             if sid and sid in seen:
                 old_type, old_source = seen[sid]
                 raise CollectionError(
                     f"duplicate ObjectIdentifier {sid} in {old_source} ({old_type}) and "
-                    f"{source} ({t}); do not mix collection snapshots"
+                    f"{source} ({t}); " + ("conflicting records within one file; not a recognized collector placeholder"
+                                          if old_source == source else "do not mix collection snapshots")
                 )
             if sid:
                 seen[sid] = (t, source)
