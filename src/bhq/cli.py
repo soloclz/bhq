@@ -227,9 +227,17 @@ def cmd_analysis(args):
         if args.command == 'coverage' and args.raw_only:
             data['fields'] = [row for row in data['fields'] if row['status'] == 'raw-only']
     if args.format == 'json':
-        print(json.dumps(data, indent=2, ensure_ascii=False))
+        rendered = json.dumps(data, indent=2, ensure_ascii=False)
+    elif args.format == 'md':
+        rendered = presentation.markdown(args.command, data, getattr(args, 'all_grants', False))
     else:
-        print('\n'.join(presentation.lines(args.command, data)))
+        rendered = '\n'.join(presentation.lines(args.command, data, getattr(args, 'all_grants', False)))
+    if args.output:
+        with open(args.output, 'w', encoding='utf-8') as fh:
+            fh.write(rendered if rendered.endswith('\n') else rendered + '\n')
+        print(f"[+] wrote {args.format} {args.command} output -> {args.output}", file=sys.stderr)
+    else:
+        print(rendered)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -289,9 +297,11 @@ def build_parser() -> argparse.ArgumentParser:
         ('route', 'conditional route with distinct account, object and host states'),
     ):
         s = add(name, cmd_analysis, help_)
-        s.add_argument('--format', choices=['text', 'json'], default='text')
+        s.add_argument('--format', choices=['text', 'json', 'md'], default='text')
+        s.add_argument('-o', '--output', help='write output to this file')
         if name == 'adcs':
             s.add_argument('--from', dest='frm', help='evaluate grants through this principal membership')
+            s.add_argument('--all-grants', action='store_true', help='include the complete grant inventory in text/Markdown output')
         if name == 'coverage':
             s.add_argument('--raw-only', action='store_true', help='fields without a dedicated query outlet')
         if name == 'route':

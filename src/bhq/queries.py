@@ -344,11 +344,12 @@ def coverage(g: Graph) -> dict:
 def diagnostics(g: Graph) -> list[str]:
     """Runtime limitations that must accompany negative findings."""
     warnings = []
-    for item in g.collection_normalizations:
+    if g.collection_normalizations:
+        identifiers = sorted({item['object_identifier'] for item in g.collection_normalizations})
         warnings.append(
-            f"RustHound builtin placeholder normalized: {item['object_identifier']} in {item['source']}; "
-            f"kept data[{item['kept_index']}], ignored empty default data[{item['placeholder_index']}]; "
-            "original file and metadata count unchanged"
+            f"RustHound builtin placeholders normalized ({len(g.collection_normalizations)}): "
+            f"{', '.join(identifiers)}; kept populated records and ignored matching empty defaults; "
+            "original files and metadata counts unchanged"
         )
     if g.unhandled_files:
         warnings.append("JSON files not analyzed: " + ", ".join(g.unhandled_files))

@@ -15,6 +15,7 @@ prints.
 | What local admin or remote-access relationships were collected? | `bhq local` |
 | What delegation settings and replication rights were recorded? | `bhq deleg` / `bhq dcsync` |
 | What trust configuration was recorded for each domain? | `bhq trusts` |
+| Which ESC conditions are visible for this principal? | `bhq adcs --from <principal>` |
 | Which principals can reach the configured high-value set? | `bhq reachers` |
 
 Each command takes the collection path first. `report` combines these queries.
@@ -63,6 +64,7 @@ bhq deleg ./collection
 bhq trusts ./collection
 bhq dcsync ./collection
 bhq reachers ./collection
+bhq adcs ./collection --from alice --format md -o adcs-alice.md
 ```
 
 Keep each collection snapshot in a separate directory. Duplicate object IDs are
@@ -186,6 +188,6 @@ The Python `path_to_da()` helper now means Domain Admins specifically; use
 |---|---|
 | Local access and sessions | Conditional routes now join recorded relationships; verify current effective access, logon type and credential availability |
 | GPO effects | Candidate scope handles recorded containment and inheritance; filtering, enabled state, precedence and actual application still require confirmation |
-| AD CS | Recorded conditions, grants and publication are analyzed; full ESC coverage, certificate-chain validation and live CA behavior need additional analysis |
+| AD CS | ESC1–ESC17 are listed, but some require data outside BloodHound; certificate-chain validation and live CA behavior remain separate checks |
 | Shares, SYSVOL file contents, services and live authentication | Separate protocol-specific enumeration and verification |
 | Full collector compatibility | Real lab output and comparisons with known configuration; synthetic fixtures cover selected cases only |

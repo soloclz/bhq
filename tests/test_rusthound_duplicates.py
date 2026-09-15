@@ -72,8 +72,8 @@ def test_preserve_real_record_and_report_normalization(tmp_path, rid, name, vers
     assert graph.collection_metadata[file.name]["count"] == 2
     assert graph.collection_normalizations == [{"source": file.name, "object_identifier": sid,
         "kept_index": 1 if reverse else 0, "placeholder_index": 0 if reverse else 1}]
-    assert any("placeholder normalized" in message for message in queries.diagnostics(graph))
-    assert any("placeholder normalized" in message for message in report.build(graph)["analysis"]["warnings"])
+    assert any("placeholders normalized" in message for message in queries.diagnostics(graph))
+    assert any("placeholders normalized" in message for message in report.build(graph)["analysis"]["warnings"])
     assert file.read_bytes() == original
 
 

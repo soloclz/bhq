@@ -228,6 +228,94 @@ def test_adcs_combines_only_selected_subject_grants_and_retains_provenance(tmp_p
     assert anonymous['templates'][0]['enrollment'][0]['ca_grant_found'] is None
 
 
+def esc_state(data, esc):
+    return next(row['state'] for row in data['esc_summary'] if row['esc'] == esc)
+
+
+def test_adcs_summary_covers_every_certipy_esc_without_hiding_external_state(tmp_path):
+    _write(tmp_path)
+    make_pki(tmp_path)
+    data = pki.adcs(load(tmp_path), BOB)
+    assert [row['esc'] for row in data['esc_summary']] == [f'ESC{i}' for i in range(1, 18)]
+    assert esc_state(data, 'ESC1') == 'candidate'
+    assert {esc_state(data, esc) for esc in ('ESC10', 'ESC12', 'ESC14')} == {'not-observable'}
+    assert esc_state(data, 'ESC11') == 'not-observable'
+    assert esc_state(data, 'ESC16') == 'not-observable'
+
+
+@pytest.mark.parametrize('updates,esc', [
+    ({'effectiveekus': []}, 'ESC2'),
+    ({'effectiveekus': [pki.ENROLLMENT_AGENT_OID]}, 'ESC3'),
+    ({'nosecurityextension': True}, 'ESC9'),
+    ({'schemaversion': 1}, 'ESC15'),
+    ({'effectiveekus': [pki.SERVER_AUTH_OID]}, 'ESC17'),
+])
+def test_adcs_template_esc_candidates_require_recorded_principal_enrollment(tmp_path, updates, esc):
+    _write(tmp_path)
+    make_pki(tmp_path)
+    mutate(tmp_path, 'certtemplates', lambda rows: rows[0]['Properties'].update(updates))
+    assert esc_state(pki.adcs(load(tmp_path), BOB), esc) == 'candidate'
+    assert esc_state(pki.adcs(load(tmp_path), DAVE), esc) == 'not-matched'
+
+
+def test_adcs_esc13_joins_recorded_policy_oid_to_group(tmp_path):
+    _write(tmp_path)
+    make_pki(tmp_path)
+    write(tmp_path, 'issuancepolicies', [{'ObjectIdentifier': 'POLICY-OID',
+        'Properties': {'oid': '1.2.3.4'}, 'GroupLink': member(DA)}])
+    mutate(tmp_path, 'certtemplates', lambda rows: rows[0]['Properties'].update(issuancepolicies=['1.2.3.4']))
+    assert esc_state(pki.adcs(load(tmp_path), BOB), 'ESC13') == 'candidate'
+
+
+def test_adcs_esc13_reports_selected_subject_control_of_policy_object(tmp_path):
+    _write(tmp_path)
+    make_pki(tmp_path)
+    write(tmp_path, 'issuancepolicies', [{'ObjectIdentifier': 'POLICY-OID',
+        'Properties': {'name': 'POLICY', 'oid': '1.2.3.4'},
+        'Aces': [{'PrincipalSID': BOB, 'RightName': 'GenericWrite'}]}])
+    data = pki.adcs(load(tmp_path), BOB)
+    assert esc_state(data, 'ESC13') == 'candidate'
+    summary = next(row for row in data['esc_summary'] if row['esc'] == 'ESC13')
+    assert summary['candidates'][0]['id'] == 'POLICY-OID'
+
+
+def test_adcs_ca_esc_states_distinguish_candidates_from_unobservable_fields(tmp_path):
+    _write(tmp_path)
+    make_pki(tmp_path)
+    def ca_settings(rows):
+        ca = rows[0]
+        ca['HttpEnrollmentEndpoints'] = [{'Collected': True, 'FailureReason': None,
+            'Result': {'ADCSWebEnrollmentHTTP': True}}]
+        ca['CARegistryData'].update({
+            'IsUserSpecifiesSanEnabled': {'Collected': True, 'FailureReason': None, 'Value': True},
+            'EnforceEncryptionForRequests': {'Collected': True, 'FailureReason': None, 'Value': False},
+            'DisabledExtensions': {'Collected': True, 'FailureReason': None,
+                                   'Value': [pki.SID_EXTENSION_OID]},
+        })
+        ca['CARegistryData']['CASecurity']['Data'].append(
+            {'PrincipalSID': BOB, 'RightName': 'ManageCertificates'})
+    mutate(tmp_path, 'enterprisecas', ca_settings)
+    data = pki.adcs(load(tmp_path), BOB)
+    assert esc_state(data, 'ESC6') == 'configuration-candidate'
+    assert esc_state(data, 'ESC7') == 'candidate'
+    assert esc_state(data, 'ESC8') == 'candidate'
+    assert esc_state(data, 'ESC11') == 'configuration-candidate'
+    assert esc_state(data, 'ESC16') == 'configuration-candidate'
+
+
+def test_adcs_markdown_writes_compact_esc_report(tmp_path, capsys):
+    _write(tmp_path)
+    make_pki(tmp_path)
+    output = tmp_path / 'adcs.md'
+    assert cli.main(['adcs', str(tmp_path), '--from', 'bob', '--format', 'md', '-o', str(output)]) == 0
+    rendered = output.read_text()
+    assert '# AD CS offline assessment' in rendered
+    assert '| ESC1 | candidate |' in rendered
+    assert '| ESC16 | not-observable |' in rendered
+    assert '**Selected subject:** `bob`' in rendered
+    assert 'wrote md adcs output' in capsys.readouterr().err
+
+
 @pytest.mark.parametrize('field,value,state', [('requiresmanagerapproval', True, 'not-matched'),
     ('authorizedsignatures', 1, 'not-matched'), ('authorizedsignatures', False, 'unknown'),
     ('authenticationenabled', None, 'unknown'), ('enrolleesuppliessubject', False, 'not-matched')])

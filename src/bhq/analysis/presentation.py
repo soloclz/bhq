@@ -13,7 +13,16 @@ def proof(row):
     return f" [{ev.get('source_file')}:{ev.get('object_id')}:{ev.get('field')}]"
 
 
-def lines(command, data):
+def _candidate_names(row):
+    names = []
+    for item in row.get('candidates', []):
+        value = name(item)
+        if value not in names:
+            names.append(value)
+    return names
+
+
+def lines(command, data, details=False):
     out = ['Recorded input only; unknown values and conditional findings do not establish effective access.']
     if command == 'access':
         for row in data:
@@ -50,17 +59,33 @@ def lines(command, data):
             out.append('issue: ' + json.dumps(issue, ensure_ascii=False))
         out.append('Candidate scope excludes confirmed inheritance blocks; verify link state, filtering, policy content and application.')
     elif command == 'adcs':
+        subject = name(data['principal']) if data.get('principal') else '(none; configuration only)'
+        out.append(f"AD CS assessment subject: {subject}")
+        out.append('ESC states: candidate is a recorded condition set, not a verified attack path.')
+        for row in data['esc_summary']:
+            candidates = ', '.join(_candidate_names(row))
+            suffix = f"; candidates: {candidates}" if candidates else ''
+            out.append(f"{row['esc']} {row['state']}: {row['method']}{suffix}")
+            if row['state'] in {'candidate', 'configuration-candidate', 'unknown', 'not-observable'}:
+                out.append(f"  verify: {row['verify']}")
         for ca in data['cas']:
             out.append(f"CA {name(ca['ca'])}; hosting computer={name(ca['hosting_computer'])}; NTAuth thumbprint matches={len(ca['ntauth_thumbprint_matches'])}" + proof(ca))
         for row in data['templates']:
+            relevant = any(a['state'] in {'candidate', 'configuration-candidate'} for a in row['esc_assessment'])
+            relevant = relevant or any(e['template_grant_found'] is True for e in row['enrollment'])
+            if not details and not relevant:
+                continue
             out.append(f"template {name(row['template'])}: ESC1 template conditions={row['esc1_template_state']}; recorded publications={row['publication_count']}" + proof(row))
             out.append('  checks: ' + json.dumps(row['esc1_template_checks'], ensure_ascii=False))
             for enrollment in row['enrollment']:
                 out.append(f"  {name(enrollment['ca'])}: selected subject template grant={enrollment['template_grant_found']}; CA grant={enrollment['ca_grant_found']}")
             out.extend('  ' + clue for clue in row['clues'])
-        for row in data['objects']:
-            for grant in row['grants']:
-                out.append(f"grant {name(grant['principal'])} --{grant['right']}--> {name(row['object'])}" + proof(grant))
+        if details or data.get('principal'):
+            for row in data['objects']:
+                for grant in row['grants']:
+                    out.append(f"grant {name(grant['principal'])} --{grant['right']}--> {name(row['object'])}" + proof(grant))
+        else:
+            out.append('All-principal grants omitted from text output; use --all-grants or --format json.')
         for row in data['publications']:
             if not row['resolved']:
                 out.append(f"unresolved publication: {name(row['ca'])} -> {name(row['template'])}" + proof(row))
@@ -86,3 +111,43 @@ def lines(command, data):
     if len(out) == 1:
         out.append('(no matching recorded entries; collection scope still applies)')
     return out
+
+
+def markdown(command, data, details=False):
+    if command != 'adcs':
+        title = command.replace('-', ' ').title()
+        body = '\n'.join(lines(command, data, details))
+        return f"# {title}\n\n```text\n{body}\n```"
+    subject = name(data['principal']) if data.get('principal') else '(none; configuration only)'
+    out = ['# AD CS offline assessment', '', f'**Selected subject:** `{subject}`', '',
+           'Recorded conditions are leads for validation, not verified attack paths.', '',
+           '## ESC summary', '', '| ESC | state | candidates | detection basis | next validation |',
+           '|---|---|---|---|---|']
+    for row in data['esc_summary']:
+        candidates = '<br>'.join(f'`{value}`' for value in _candidate_names(row)) or '—'
+        cells = [row['esc'], row['state'], candidates, row['method'], row['verify']]
+        out.append('| ' + ' | '.join(str(cell).replace('|', '\\|') for cell in cells) + ' |')
+    out += ['', '## CA and relevant templates', '']
+    for ca in data['cas']:
+        out.append(f"- **CA `{name(ca['ca'])}`** — host `{name(ca['hosting_computer'])}`; "
+                   f"NTAuth thumbprint matches: {len(ca['ntauth_thumbprint_matches'])}{proof(ca)}")
+    for row in data['templates']:
+        relevant = any(a['state'] in {'candidate', 'configuration-candidate'} for a in row['esc_assessment'])
+        relevant = relevant or any(e['template_grant_found'] is True for e in row['enrollment'])
+        if not details and not relevant:
+            continue
+        out.append(f"- Template `{name(row['template'])}` — ESC1 template conditions: "
+                   f"`{row['esc1_template_state']}`; recorded publications: `{row['publication_count']}`{proof(row)}")
+        for enrollment in row['enrollment']:
+            out.append(f"  - `{name(enrollment['ca'])}`: selected-subject template grant "
+                       f"`{enrollment['template_grant_found']}`; CA grant `{enrollment['ca_grant_found']}`")
+    if details or data.get('principal'):
+        out += ['', '## Relevant recorded grants', '']
+        for row in data['objects']:
+            for grant in row['grants']:
+                out.append(f"- `{name(grant['principal'])}` —{grant['right']}→ `{name(row['object'])}`{proof(grant)}")
+    else:
+        out += ['', 'All-principal grants are omitted. Use `--all-grants` or `--format json` for complete records.']
+    out += ['', '## Analysis limits', '']
+    out.extend(f'- {item}' for item in data['limitations'])
+    return '\n'.join(out)

@@ -33,7 +33,7 @@ analysis and `candidate_route`; the existing `path` key and semantics remain.
 | `sid-history` | Both HasSIDHistory and Properties.sidhistory; historical identifiers retain their sources | Knowledge of the historical account credential or its current group memberships |
 | `user-rights` | Privilege assignments, deny-right names, unresolved LocalNames and failures | Effective token rights or a host-administration capability |
 | `policy` | Links, containment, inheritance blocking/enforcement and explicit GPOChanges projections | Resultant policy, link enablement, WMI/security filtering, precedence or SYSVOL write access |
-| `adcs --from` | Template conditions; published-template references; selected subject grants through recorded membership; CA security records; NTAuth thumbprint and certificate-chain reference matches; issuance-policy group links | Successful enrollment/authentication, verified certificate chains or complete ESC coverage |
+| `adcs --from` | ESC1–ESC17 matrix; template/CA conditions; publication; selected-subject grants through recorded membership; NTAuth and chain-reference joins | Successful enrollment/authentication, verified certificate chains, or prerequisites outside the collection |
 | `coverage` | Every observed field path, its query outlet, source examples and unhandled JSON files | Upstream collection completeness or complete semantic interpretation of every field |
 
 `raw-only` means there is no dedicated query outlet for that field shape. The
@@ -87,11 +87,23 @@ All six RustHound-CE AD CS types are loaded: enterprisecas, rootcas, aiacas,
 ntauthstores, certtemplates and issuancepolicies. An AD CS-only collection is valid
 input. IDs and source files survive directory and ZIP loading.
 
-ESC1 template checks require recorded authenticationenabled=true,
-enrolleesuppliessubject=true, requiresmanagerapproval=false and
-an integer authorizedsignatures=0. Missing or ill-typed values are unknown, not
-false. `matched` describes these template conditions, not a verified ESC1 path.
-A published template and template grant alone are insufficient.
+`adcs` always prints ESC1–ESC17 so a missing detector cannot look like a negative
+finding. The summary states are:
+
+- `candidate`: the selected subject and recorded data meet the modeled conditions.
+- `configuration-candidate`: relevant CA settings were recorded, but live issuance
+  behavior is not established by the collection.
+- `not-matched`: at least one recorded condition is false.
+- `unknown`: a modeled condition is missing or ambiguous.
+- `not-observable`: the required source is outside the loaded BloodHound data.
+
+ESC1 checks require a published template, selected-subject template and CA Enroll
+grants, authenticationenabled=true, enrolleesuppliessubject=true,
+requiresmanagerapproval=false and an integer authorizedsignatures=0. Missing or
+ill-typed values are unknown, not false. The same publication, enrollment and
+approval gates are reused where applicable for ESC2, ESC3, ESC9, ESC13, ESC15 and
+ESC17. ESC4 and ESC5 report selected-subject object-control candidates; directory
+control of a CA object is not treated as a CA service role.
 
 With `--from`, template grants are matched against the selected principal and
 recorded nested/primary-group membership. CA enrollment requires an explicit
@@ -106,16 +118,22 @@ from a directory security descriptor: `Collected: true` is not independent proof
 of a successful CA-server registry query. Inspect the collection mode and logs.
 No deny-ACE or effective-token evaluation is performed.
 
-Additional clues cover unrestricted/Any Purpose effective EKUs, enrollment-agent
-usage, template object-control rights and nosecurityextension. Template issuance
-policy OIDs are joined to recorded policy/group references. CA certificate-chain
+Template analysis covers unrestricted/Any Purpose EKUs, enrollment-agent usage,
+SID-extension settings, issuance-policy group links, schema version and client or
+server authentication usage. CA analysis covers SAN settings, CA roles and HTTP
+endpoint results when their collection status is explicit. CA certificate-chain
 thumbprints and NTAuth thumbprints are matched to recorded objects, without
 cryptographic validation or assuming that every loaded domain shares a forest.
 These outputs support follow-up analysis; they do not create a DA edge.
 
 CA registry data and HTTP enrollment results are retained in JSON. Inspect their
-Collected/FailureReason fields before interpreting values. Certipy remains useful
-for additional collection, current CA behavior and ESC analysis beyond these rules.
+Collected/FailureReason fields before interpreting values. The reviewed
+RustHound-CE v2.5.12 output does not provide the CA `DisableExtensionList` or RPC
+encryption setting used to assess ESC16 and ESC11, so those rows are
+`not-observable` unless a compatible collector records the fields. ESC10, ESC12
+and ESC14 also need host, key-store or attribute-specific evidence outside generic
+BloodHound JSON. Certipy remains useful for live CA behavior and these missing
+sources. `not-observable` never means safe.
 
 ## Validation and references
 
@@ -138,3 +156,4 @@ Reviewed collector: RustHound-CE v2.5.12,
 - [Constrained delegation](https://bloodhound.specterops.io/resources/edges/allowed-to-delegate)
 - [RBCD](https://bloodhound.specterops.io/resources/edges/allowed-to-act)
 - [ADCSESC1 requirements](https://bloodhound.specterops.io/resources/edges/adcs-esc1)
+- [Certipy 5.1.0 ESC detector source](https://github.com/ly4k/Certipy/blob/5.1.0/certipy/commands/find.py)

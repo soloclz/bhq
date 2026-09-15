@@ -238,7 +238,7 @@ def as_md(data: dict) -> str:
         L += ["", line]
     if c["computers"]:
         L += ["", f"`{_local_coverage_line(c)}`"]
-    L += ["", "## Analysis confidence", ""]
+    L += ["", "## Analysis limits and collection warnings", ""]
     warnings = data["analysis"]["warnings"]
     if warnings:
         L.extend(f"> ⚠ {warning}" for warning in warnings)
