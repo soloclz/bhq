@@ -146,8 +146,12 @@ def cmd_members(args):
         raise SystemExit(1)
     if candidates:
         sid = next(iter(candidates))
-        for member in (g.by_sid[sid].get("Members") or []):
-            print(g.name(member.get("ObjectIdentifier")))
+        # Use the normalized membership graph rather than only the group's raw
+        # Members array.  AD records a user's primary group on the user object
+        # as PrimaryGroupSID, so groups such as Domain Users can legitimately
+        # have an empty Members array while still having recorded members.
+        for member_sid in g.member_edges_rev.get(sid, []):
+            print(g.name(member_sid))
         return
     print(f"[X] group not found: {args.group}", file=sys.stderr)
     raise SystemExit(1)

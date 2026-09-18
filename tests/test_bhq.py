@@ -254,6 +254,20 @@ def test_reverse_control_index(tmp_path):
     assert BOB in g.member_edges_rev[DA]
 
 
+def test_members_cli_includes_primary_group_membership(tmp_path, capsys):
+    """`members` must use the normalized membership graph.  Primary-group
+    membership is stored on the account, not in the group's Members array."""
+    _write(tmp_path)
+    path = tmp_path / "t_users.json"
+    blob = json.loads(path.read_text())
+    blob["data"][0]["PrimaryGroupSID"] = SRVADMINS
+    path.write_text(json.dumps(blob))
+
+    from bhq import cli
+    assert cli.main(["members", str(tmp_path), "SRVADMINS"]) == 0
+    assert capsys.readouterr().out.splitlines() == ["alice"]
+
+
 def test_high_value_is_derived_not_named(tmp_path):
     """A custom group holding DCSync is high-value because of the right it holds,
     not because its name appears in a list."""
