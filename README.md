@@ -58,6 +58,7 @@ bhq report ./collection --from alice --format md -o report.md
 bhq report ./collection --format json -o report.json
 bhq path ./collection.zip alice --goal da
 bhq controls ./collection "SRVADMINS@TEST.LOCAL" -d 3
+bhq controls ./collection "alice@TEST.LOCAL" -d 3 --details
 bhq members ./collection "DOMAIN ADMINS@TEST.LOCAL"
 bhq local ./collection alice
 bhq deleg ./collection
@@ -138,6 +139,13 @@ Reports include collection warnings and a machine-readable analysis scope.
 These limitations also apply when a report contains no runtime warnings.
 
 ## Objects and property clues
+
+`controls --details` keeps the relationship graph first, then lists each distinct
+control-edge target with its object type, recorded DN, and ObjectIdentifier.
+Numbered references tie graph edges to those exact objects; `MemberOf` targets
+are not repeated in the detail list. A missing DN is reported as not recorded,
+not inferred from the display name. Without `--details`, `controls` output is
+unchanged.
 
 `objects` lists identifiers and names; `--kind` limits the object type and
 `--match` filters names or IDs by substring. `object` returns one complete raw

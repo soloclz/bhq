@@ -84,11 +84,25 @@ def cmd_path(args):
 def cmd_controls(args):
     g = _load(args)
     sid = _resolve(g, args.principal)
-    rows = queries.controls(g, sid, max_depth=args.depth)
+    rows = queries.control_rows(g, sid, max_depth=args.depth)
     if not rows:
         print("(no outbound object control)")
+    targets = {}
     for depth, frm, label, to in rows:
-        print(f"{'  ' * depth}{frm} --{label}--> {to}")
+        if args.details and label != "MemberOf" and to not in targets:
+            targets[to] = len(targets) + 1
+        ref = f" [{targets[to]}]" if args.details and to in targets and label != "MemberOf" else ""
+        print(f"{'  ' * depth}{g.name(frm)} --{label}--> {g.name(to)}{ref}")
+    if args.details:
+        print("\nObjects (control targets):")
+        if not targets:
+            print("(none in the displayed graph)")
+        for target, number in targets.items():
+            props = (g.by_sid.get(target) or {}).get("Properties") or {}
+            dn = props.get("distinguishedname") or "(not recorded)"
+            print(f"[{number}] {g.qualified_name(target)} [{g.kind(target)}]")
+            print(f"    DN: {dn}")
+            print(f"    ObjectIdentifier: {target}")
 
 
 def cmd_kerberoast(args):
@@ -267,6 +281,7 @@ def build_parser() -> argparse.ArgumentParser:
     s = add("controls", cmd_controls, "what a principal controls")
     s.add_argument("principal")
     s.add_argument("-d", "--depth", type=int, default=2, help="hops to expand (default 2)")
+    s.add_argument("--details", action="store_true", help="list control targets with type, DN and ObjectIdentifier")
 
     add("kerberoast", cmd_kerberoast, "users with SPNs")
     add("asrep", cmd_asrep, "users not requiring Kerberos pre-auth")

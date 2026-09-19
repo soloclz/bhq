@@ -202,9 +202,8 @@ def high_value_members(g: Graph) -> list[tuple[str, list[str], str]]:
     return sorted(out)
 
 
-def controls(g: Graph, sid: str, max_depth: int = 2) -> list[tuple[int, str, str, str]]:
-    """BFS the outbound control+membership graph from `sid`.
-    Returns (depth, from_name, edge_label, to_name) tuples."""
+def control_rows(g: Graph, sid: str, max_depth: int = 2) -> list[tuple[int, str, str, str]]:
+    """BFS outbound control+membership edges, retaining object identifiers."""
     seen = {sid}
     out = []
     frontier = deque([(sid, 0)])
@@ -215,11 +214,17 @@ def controls(g: Graph, sid: str, max_depth: int = 2) -> list[tuple[int, str, str
         edges = [(t, r) for (t, r) in g.control_edges.get(cur, [])]
         edges += [(gr, "MemberOf") for gr in g.member_edges.get(cur, [])]
         for nxt, label in edges:
-            out.append((depth, g.name(cur), label, g.name(nxt)))
+            out.append((depth, cur, label, nxt))
             if nxt not in seen:
                 seen.add(nxt)
                 frontier.append((nxt, depth + 1))
     return out
+
+
+def controls(g: Graph, sid: str, max_depth: int = 2) -> list[tuple[int, str, str, str]]:
+    """Return (depth, from_name, edge_label, to_name) for existing callers."""
+    return [(depth, g.name(frm), label, g.name(to))
+            for depth, frm, label, to in control_rows(g, sid, max_depth)]
 
 
 def shortest_path(g: Graph, start_sid: str, goal_sids: set[str]) -> list[tuple[str, str | None]] | None:

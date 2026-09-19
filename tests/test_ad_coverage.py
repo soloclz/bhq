@@ -3,7 +3,7 @@ import json
 
 from bhq import cli, queries, report
 from bhq.loader import load
-from .test_bhq import _write, DOM, ALICE, BOB, DAVE, DA, SRVADMINS
+from .test_bhq import _write, DOM, ALICE, BOB, CAROL, DAVE, DA, SRVADMINS
 
 
 def replace_collection(path, kind, data):
@@ -119,6 +119,45 @@ def test_gpo_ou_container_acls_are_visible_without_inventing_policy_effects(tmp_
     assert len(queries.controls(g, DAVE, 1)) == 4  # three policy objects plus carol
     assert not any(sid.startswith('TEST-') for sid in queries.goal_sids(g))
     assert queries.object_details(g, 'TEST-gpos')['source_file'] == 't_gpos.json'
+
+
+def test_controls_details_links_edges_to_distinct_targets_without_guessing_dn(tmp_path, capsys):
+    _write(tmp_path)
+    users = json.loads((tmp_path / 't_users.json').read_text())['data']
+    next(user for user in users if user['ObjectIdentifier'] == CAROL)['Properties']['distinguishedname'] = (
+        'CN=carol,CN=Users,DC=test,DC=local')
+    replace_collection(tmp_path, 'users', users)
+    replace_collection(tmp_path, 'ous', [
+        {'ObjectIdentifier': 'TEST-OU', 'Properties': {
+            'name': 'ADCS@TEST.LOCAL', 'distinguishedname': 'OU=ADCS,DC=test,DC=local'},
+         'Aces': [{'PrincipalSID': DAVE, 'RightName': 'GenericAll'},
+                  {'PrincipalSID': DAVE, 'RightName': 'WriteDacl'}]},
+        {'ObjectIdentifier': 'TEST-DUP', 'Properties': {
+            'name': 'SRVADMINS@TEST.LOCAL', 'distinguishedname': 'OU=SRVADMINS,DC=test,DC=local'},
+         'Aces': [{'PrincipalSID': DAVE, 'RightName': 'GenericAll'}]},
+    ])
+
+    assert cli.main(['controls', str(tmp_path), 'dave', '-d', '2']) == 0
+    plain = capsys.readouterr().out
+    assert 'Objects (control targets)' not in plain
+    assert 'dave --GenericAll--> ADCS' in plain
+
+    assert cli.main(['controls', str(tmp_path), 'dave', '-d', '2', '--details']) == 0
+    graph, details = capsys.readouterr().out.split('\nObjects (control targets):\n')
+    assert graph.count('ADCS@TEST.LOCAL [') == 2
+    assert details.count('ObjectIdentifier: TEST-OU') == 1
+    assert 'DN: OU=ADCS,DC=test,DC=local' in details
+    assert 'DN: CN=carol,CN=Users,DC=test,DC=local' in details
+    assert 'DN: (not recorded)' in details  # the group reached from carol has no DN
+    assert '[ou]' in details and '[user]' in details
+    assert 'ObjectIdentifier: TEST-DUP' in details
+    assert 'DN: OU=SRVADMINS,DC=test,DC=local' in details
+    assert details.count('SRVADMINS@TEST.LOCAL') == 2  # same name, distinct group and OU
+
+    assert cli.main(['controls', str(tmp_path), 'bob', '-d', '1', '--details']) == 0
+    member_only = capsys.readouterr().out
+    assert '--MemberOf--> DOMAIN ADMINS' in member_only
+    assert 'Objects (control targets):\n(none in the displayed graph)' in member_only
 
 
 def test_object_lookup_preserves_principal_disambiguation(tmp_path, capsys):
