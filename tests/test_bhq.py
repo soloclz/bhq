@@ -361,6 +361,61 @@ def test_report_formats(tmp_path):
                for w in data["analysis"]["warnings"])
 
 
+def test_report_keeps_anomalous_leads_without_routine_directory_baseline(tmp_path):
+    _write(tmp_path)
+    builtin = 'TEST.LOCAL-S-1-5-32-544'
+    groups_file = tmp_path / 't_groups.json'
+    groups = json.loads(groups_file.read_text())
+    groups['data'][0]['Members'].append({'ObjectIdentifier': ADMIN})
+    groups['data'][0]['Aces'] = [{'PrincipalSID': builtin, 'RightName': 'GenericWrite'},
+                                 {'PrincipalSID': 'TEST.LOCAL-S-1-5-18', 'RightName': 'Owns'}]
+    groups['data'].append({'ObjectIdentifier': builtin, 'Properties': {'name': 'Administrators'},
+                           'Members': [{'ObjectIdentifier': ADMIN}], 'Aces': []})
+    groups_file.write_text(json.dumps(groups))
+    domain_file = tmp_path / 't_domains.json'
+    domains = json.loads(domain_file.read_text())
+    domains['data'][0]['Aces'] += [{'PrincipalSID': builtin, 'RightName': 'GetChanges'},
+                                   {'PrincipalSID': builtin, 'RightName': 'GetChangesAll'}]
+    domains['data'][0]['Links'] = [{'GUID': 'GPO', 'IsEnforced': False}]
+    domain_file.write_text(json.dumps(domains))
+    (tmp_path / 't_gpos.json').write_text(json.dumps({'data': [
+        {'ObjectIdentifier': 'GPO', 'Properties': {'name': 'Default Policy'}, 'Aces': []}]}))
+    users_file = tmp_path / 't_users.json'
+    users = json.loads(users_file.read_text())
+    users['data'].append({'ObjectIdentifier': f'{DOM}-4101', 'Properties': {
+        'samaccountname': 'adfs_gmsa$', 'hasspn': True,
+        'serviceprincipalnames': ['host/federation.test.local'],
+        'useraccountcontrol': 4096, 'enabled': True}, 'Aces': []})
+    users_file.write_text(json.dumps(users))
+    computer_file = tmp_path / 't_computers.json'
+    computers = json.loads(computer_file.read_text())
+    computers['data'][0]['Sessions'] = {'Collected': True, 'Results': []}
+    computers['data'].append({'ObjectIdentifier': f'{DOM}-1000', 'Properties': {
+        'name': 'DC01.TEST.LOCAL', 'samaccountname': 'DC01$', 'isdc': True,
+        'unconstraineddelegation': True}, 'Aces': []})
+    computer_file.write_text(json.dumps(computers))
+
+    data = report.build(load(tmp_path))
+    md = report.as_md(data)
+    assert data['replication_aces'] and data['extended']['sessions']
+    assert 'alice' in md and 'ForceChangePassword' in md
+    assert 'adfs_gmsa$' not in md
+    assert 'Unconstrained delegation: DC01$' not in md
+    assert 'Administrator (1 hops)' not in md
+    assert 'Administrators (1 hops)' not in md
+    assert 'TEST.LOCAL-S-1-5-18' not in md
+    assert 'Recorded replication ACEs' not in md
+    assert 'High-value groups without recorded members' not in md
+    assert 'Recorded sessions' not in md
+    assert 'GPO projected changes and issues' not in md
+
+    computers['data'][0]['Sessions'] = {'Collected': True, 'Results': [
+        {'UserSID': BOB, 'ComputerSID': WS01}]}
+    computer_file.write_text(json.dumps(computers))
+    md = report.render(load(tmp_path), fmt='md')
+    assert 'Recorded sessions' in md and 'bob' in md
+
+
 def test_report_exhausts_control_graph_and_keeps_alternate_edges(tmp_path):
     _write(tmp_path)
     users_file = tmp_path / "t_users.json"

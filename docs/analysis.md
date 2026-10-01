@@ -1,4 +1,4 @@
-# Recorded data and conditional analysis (bhq 0.5.0)
+# Recorded data and conditional analysis (bhq 0.5.1)
 
 bhq is an offline analyzer. These commands read a saved collection; they do not
 connect to hosts, authenticate, change AD objects, or execute the routes shown.
@@ -25,10 +25,14 @@ bhq route ./collection alice --to WS01.TEST.LOCAL --state host
 
 These commands accept `--format json` for structured records and source references.
 The text and Markdown report select settings and relationships that merit review:
-credential-related text, Kerberos account leads, replication grants, control from outside
-the investigation-target set, reachable targets, delegation, trust, host access,
-GPO scope, and AD CS conditions when recorded. It does not repeat collection
-metadata, ordinary false account flags, every ACL edge, or the full raw field inventory.
+credential-related text, Kerberos account leads, replication grant combinations,
+control from outside the investigation-target set, reachable targets, delegation,
+trust, host access, recorded sessions, GPO local-group changes and AD CS conditions.
+It omits empty session entries, GPO link-only scope expansion, empty high-value
+group lists, duplicate replication ACEs and paths from already privileged built-in
+principals. This is a relevance filter, not a comparison with AD defaults: the
+collection cannot show whether an ACL or GPO was modified from its original state.
+The `sessions`, `policy`, `dcsync` and `reachers` commands retain focused views.
 Use `clues`, `controls`, `coverage`, and `object` for focused inspection. The JSON
 report retains all recorded ACL and membership edges, property clues, account
 settings, and populated raw-only field material. Global reverse traversals give

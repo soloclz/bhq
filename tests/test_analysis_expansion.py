@@ -388,11 +388,18 @@ def test_report_markdown_interprets_policy_and_adcs_without_dumping_records(tmp_
     make_pki(tmp_path)
     data = report.build(load(tmp_path))
     md = report.as_md(data)
-    assert 'GPO scope and projected changes' in md and 'POLICY' in md
+    assert data['extended']['policy']['effects']
+    assert 'GPO projected changes and issues' not in md
     assert 'AD CS conditions' in md and 'ESC1' in md
     assert '"registry":' not in md and '"http_endpoints":' not in md
     assert 'AD CS for selected identity' not in md
-    assert 't_enterprisecas.json' in md and 't_ous.json' in md
+    assert 't_enterprisecas.json' in md
+
+    mutate(tmp_path, 'domains', lambda d: d[0].update(
+        GPOChanges={'LocalAdmins': [member(DAVE)], 'AffectedComputers': [member(WS01)]}))
+    md = report.render(load(tmp_path), fmt='md')
+    assert 'GPO projected changes and issues' in md
+    assert 'projected AdminTo:' in md and 't_domains.json' in md
 
 
 def test_deleted_objects_do_not_form_conditional_routes(tmp_path):

@@ -12,7 +12,7 @@ import re
 from collections import defaultdict, deque
 
 from . import queries
-from .loader import CONTROL_RIGHTS, DCSYNC_RIGHTS, Graph
+from .loader import CONTROL_RIGHTS, DCSYNC_RIGHTS, Graph, rid_of
 from .analysis import observations, policy, pki, routes, inventory, presentation
 from .analysis.common import evidence, ref
 
@@ -106,7 +106,12 @@ def _account_findings(g: Graph) -> list[dict]:
                             'explanation': explanation,
                             'evidence': evidence(g, sid, f'Properties.{field}')})
 
-        if props.get('hasspn') and (props.get('samaccountname') or '').lower() != 'krbtgt':
+        account_name = (props.get('samaccountname') or '').lower()
+        user_account_control = props.get('useraccountcontrol')
+        machine_trust_account = (account_name.endswith('$')
+                                 and isinstance(user_account_control, int)
+                                 and bool(user_account_control & 0x1000))
+        if props.get('hasspn') and account_name != 'krbtgt' and not machine_trust_account:
             add('serviceprincipalnames' if props.get('serviceprincipalnames') else 'hasspn',
                 'SPN account: review the long-term key and service use')
         if props.get('dontreqpreauth') is True:
@@ -228,6 +233,10 @@ def build(g: Graph) -> dict:
         "kerberoastable": queries.kerberoastable(g),
         "asreproastable": [a["name"] for a in queries.asreproastable(g)],
         "delegation": queries.delegation(g),
+        "domain_controllers": [
+            {'id': obj['ObjectIdentifier'], 'name': (obj.get('Properties') or {}).get('samaccountname')}
+            for obj in g.computers if (obj.get('Properties') or {}).get('isdc') is True
+        ],
         "trusts": queries.trusts(g),
         "dcsync": queries.dcsync_principals(g),
         "dcsync_findings": queries.dcsync_findings(g),
@@ -243,13 +252,13 @@ def build(g: Graph) -> dict:
                      'reason': reason, 'domain_admins': sid in da_targets}
                     for sid, reason in sorted(targets.items())],
         "reachers": [
-            {"name": g.name(sid), "hops": hops,
+            {"id": sid, "name": g.name(sid), "hops": hops,
              "path": [{"name": n, "via": via} for n, via in chain]}
             for sid, (hops, chain) in sorted(
                 queries.who_can_reach_high_value(g, 'high-value').items(), key=lambda kv: (kv[1][0], g.name(kv[0])))
         ],
         "da_reachers": [
-            {"name": g.name(sid), "hops": hops,
+            {"id": sid, "name": g.name(sid), "hops": hops,
              "path": [{"name": n, "via": via} for n, via in chain]}
             for sid, (hops, chain) in sorted(
                 queries.who_can_reach_high_value(g, 'da').items(), key=lambda kv: (kv[1][0], g.name(kv[0])))
@@ -287,7 +296,7 @@ def _material_sections(data: dict) -> list[tuple[str, list[str]]]:
                            ('user-rights', 'Recorded user rights')]:
         rows = ext[command]
         if command == 'sessions':
-            rows = [row for row in rows if row['state'] != 'missing']
+            rows = [row for row in rows if row['entries'] or row['state'] in {'failed', 'invalid'}]
         if rows:
             entries = presentation.lines(command, rows)[1:]
             if command == 'sessions':
@@ -295,8 +304,13 @@ def _material_sections(data: dict) -> list[tuple[str, list[str]]]:
             sections.append((title, entries))
 
     pol = ext['policy']
-    if any(pol[key] for key in ('links', 'effects', 'changes', 'issues')):
-        sections.append(('GPO scope and projected changes', presentation.lines('policy', pol)[1:]))
+    changes = [row for row in pol['changes'] if any(row['groups'].values())]
+    if changes or pol['issues']:
+        relevant = {**pol, 'links': [], 'effects': [], 'changes': changes}
+        entries = presentation.lines('policy', relevant)[1:]
+        if not changes:
+            entries = [line for line in entries if not line.startswith('Candidate scope excludes')]
+        sections.append(('GPO projected changes and issues', entries))
 
     adcs = ext['adcs']
     if any(adcs[key] for key in ('objects', 'cas', 'templates', 'publications', 'issuance_policies')):
@@ -334,8 +348,18 @@ def trust_finding(row: dict) -> str:
         + f" [source: {row['source_file']}]")
 
 
-def dcsync_finding(row: dict) -> str:
-    grants = "; ".join(f"{grant['granted_to']}:{grant['right']}" for grant in row["grants"])
+def dcsync_finding(row: dict, replication_aces: list[dict] | None = None) -> str:
+    sources = defaultdict(list)
+    for ace in replication_aces or []:
+        sources[(ace['domain']['id'], ace['principal']['id'], ace['right'])].append(ace['evidence'])
+    grants = []
+    for grant in row['grants']:
+        detail = f"{grant['granted_to']}:{grant['right']}"
+        proof = sources[(row['domain_id'], grant['granted_to_id'], grant['right'])]
+        if proof:
+            detail += f" [source: {_proof(proof)}]"
+        grants.append(detail)
+    grants = "; ".join(grants)
     return f"{row['principal']} -> {row['domain']}; grants: {grants}"
 
 
@@ -403,6 +427,9 @@ def _unresolved_control_lines(data: dict) -> list[str]:
         if edge['edge'] == 'MemberOf' or edge['to_deleted'] or not edge['to_resolved']:
             continue
         if edge['from_resolved'] and not edge['from_deleted']:
+            continue
+        if (not edge['from_resolved'] and edge['from_id'] and
+                re.search(r'(?:^|-)S-1-5-(?:18|19|20)$', edge['from_id'], re.I)):
             continue
         if edge['from_deleted'] and edge['from_id'] in explained_deleted:
             continue
@@ -480,7 +507,9 @@ def _deleted_domain_grant_lines(data: dict) -> list[str]:
 def _report_sections(data: dict) -> list[tuple[str, list[str]]]:
     sections = []
     warnings = [item for item in data['analysis']['warnings']
-                if 'field paths have no dedicated query outlet' not in item]
+                if 'field paths have no dedicated query outlet' not in item
+                and 'builtin placeholders normalized' not in item
+                and 'Trusts are present in domain objects' not in item]
     if warnings:
         sections.append(('Input notes', warnings))
 
@@ -502,7 +531,9 @@ def _report_sections(data: dict) -> list[tuple[str, list[str]]]:
         ]))
 
     delegation = data['delegation']
-    delegation_lines = [f"Unconstrained delegation: {name}" for name in delegation['unconstrained']]
+    dc_names = {row['name'] for row in data['domain_controllers']}
+    delegation_lines = [f"Unconstrained delegation: {name}" for name in delegation['unconstrained']
+                        if name not in dc_names]
     delegation_lines += [f"Constrained delegation: {row['name']} -> {delegation_targets(row)}"
                          for row in delegation['constrained']]
     delegation_lines += [rbcd_finding(row) + f" [source: {row['source_file']}]"
@@ -517,28 +548,22 @@ def _report_sections(data: dict) -> list[tuple[str, list[str]]]:
             'Recorded trust direction and filtering need resource-specific access checks.',
             *[trust_finding(row) for row in data['trusts']],
         ]))
-    if data['dcsync_findings']:
+    default_high_privilege_rids = {500, 512, 518, 519, 544}
+    dc_ids = {row['id'] for row in data['domain_controllers']}
+    def routine_dc_replication(row: dict) -> bool:
+        return row['principal_id'] in dc_ids and all(
+            rid_of(grant['granted_to_id']) == 516
+            or str(grant['granted_to_id']).endswith('S-1-5-9')
+            for grant in row['grants'])
+
+    dcsync_findings = [row for row in data['dcsync_findings']
+                       if rid_of(row['principal_id']) not in default_high_privilege_rids
+                       and not routine_dc_replication(row)]
+    if dcsync_findings:
         sections.append(('DCSync grant combinations', [
             'Grants are combined within each domain through recorded membership; verify effective access and deny ACEs.',
-            *[dcsync_finding(row) for row in data['dcsync_findings']],
+            *[dcsync_finding(row, data['replication_aces']) for row in dcsync_findings],
         ]))
-    active_replication = [row for row in data['replication_aces']
-                          if row['principal_live'] and row['domain_live']]
-    if active_replication:
-        sections.append(('Recorded replication ACEs', [
-            f"{row['principal']['name']} [{row['principal']['id']}] --{row['right']}--> "
-            f"{row['domain']['name']} [{row['domain']['id']}] "
-            f"[source: {_proof(row['evidence'])}]"
-            for row in active_replication
-        ]))
-    if data['high_value_groups']:
-        empty_groups = [row for row in data['high_value_groups'] if not row['members']]
-        if empty_groups:
-            sections.append(('High-value groups without recorded members', [
-                f"{row['group']} ({row['why']}): review who can change its membership; "
-                'an empty Members list is limited by collection scope.'
-                for row in empty_groups
-            ]))
     control_lines = _reviewable_control_lines(data)
     if control_lines:
         sections.append(('Object control for review', [
@@ -565,7 +590,8 @@ def _report_sections(data: dict) -> list[tuple[str, list[str]]]:
         ]))
     for key, title in [('da_reachers', 'Principals reaching Domain Admins'),
                        ('reachers', 'Principals reaching high-value targets')]:
-        rows = data[key]
+        rows = [row for row in data[key]
+                if rid_of(row['id']) not in default_high_privilege_rids]
         if key == 'reachers':
             da_paths = {(row['name'], tuple((step['name'], step['via']) for step in row['path']))
                         for row in data['da_reachers']}

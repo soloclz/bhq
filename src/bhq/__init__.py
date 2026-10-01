@@ -13,4 +13,4 @@ The graph engine lives in `loader`, the analysis functions in `queries`, the
 human-readable report in `report`, and the CLI in `cli`.
 """
 
-__version__ = "0.5.0"
+__version__ = "0.5.1"

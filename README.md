@@ -176,7 +176,7 @@ from negative findings when adding support for a collector or relationship.
 
 MIT. See [LICENSE](LICENSE).
 
-## Report output in 0.5.0
+## Report output in 0.5.1
 
 `report` analyzes the collection globally; it no longer accepts `--from` or
 `--goal`. It finds every principal with a recorded ACL/membership path to the
@@ -185,7 +185,11 @@ reverse traversal gives one minimum-transition conditional route per principal
 to the high-value and Domain Admins target sets. Text and Markdown show
 interpreted leads, including selected control edges, credential-related text,
 Kerberos account leads, and notable ACEs whose principal is deleted or missing
-from the collection. They omit routine account flags and full edge dumps.
+from the collection. They omit low-signal listings: empty session results,
+link-only GPO scope expansions, empty privileged-group member lists, duplicate
+replication ACEs, and paths that start from already privileged built-in
+principals. These omissions do not establish that an ACL or GPO has its default
+configuration; the collection has no baseline comparison or GPO content.
 JSON retains `recorded_edges`, `property_clues`, `account_settings`,
 `raw_observations`, `conditional_reachers`, `conditional_da_reachers`,
 `deleted_reachers`, `deleted_da_reachers`, and `deleted_domain_grants`, with
