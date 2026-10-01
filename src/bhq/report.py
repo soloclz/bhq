@@ -348,6 +348,18 @@ def trust_finding(row: dict) -> str:
         + f" [source: {row['source_file']}]")
 
 
+def _report_trust_finding(row: dict) -> str:
+    trust = row['trust']
+    target = trust.get('TargetDomainName') or trust.get('TargetDomainSid') or '(unknown target)'
+    direction = trust.get('TrustDirection')
+    kind = trust.get('TrustType')
+    description = f"{direction} {kind} trust" if direction is not None and kind else 'recorded trust'
+    return (f"{row['source']} -> {target}: {description}; "
+            f"transitive={json.dumps(trust.get('IsTransitive'))}; "
+            f"SID filtering={json.dumps(trust.get('SidFilteringEnabled'))} "
+            f"[source: {row['source_file']}]")
+
+
 def dcsync_finding(row: dict, replication_aces: list[dict] | None = None) -> str:
     sources = defaultdict(list)
     for ace in replication_aces or []:
@@ -391,8 +403,10 @@ def _reviewable_control_lines(data: dict) -> list[str]:
         first = edges[0]
         reason = targets.get(first['to_id']) or first['to_kind']
         rights = ', '.join(f"{edge['edge']} [source: {_proof(edge['evidence'])}]" for edge in edges)
+        next_check = ('; check effective managed-password retrieval and the account\'s service role'
+                      if any(edge['edge'] == 'ReadGMSAPassword' for edge in edges) else '')
         lines.append(f"{first['from']} [{first['from_id']}] -> {first['to']} [{first['to_id']}] "
-                     f"({reason}): {rights}")
+                     f"({reason}): {rights}{next_check}")
     return lines
 
 
@@ -545,8 +559,8 @@ def _report_sections(data: dict) -> list[tuple[str, list[str]]]:
         ]))
     if data['trusts']:
         sections.append(('Trust boundaries for review', [
-            'Recorded trust direction and filtering need resource-specific access checks.',
-            *[trust_finding(row) for row in data['trusts']],
+            'Trust traversal is not modeled; verify cross-domain access before treating this relationship as a route.',
+            *[_report_trust_finding(row) for row in data['trusts']],
         ]))
     default_high_privilege_rids = {500, 512, 518, 519, 544}
     dc_ids = {row['id'] for row in data['domain_controllers']}
