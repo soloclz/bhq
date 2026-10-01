@@ -54,8 +54,6 @@ bhq objects ./collection --kind gpo
 bhq clues ./collection --kind user
 bhq object ./collection "ALICE@TEST.LOCAL"
 bhq report ./collection --format md -o report.md
-bhq report ./collection --from alice
-bhq report ./collection --from alice --format md -o report.md
 bhq report ./collection --format json -o report.json
 bhq path ./collection.zip alice --goal da
 bhq controls ./collection "SRVADMINS@TEST.LOCAL" -d 3
@@ -160,8 +158,9 @@ attributes, plus selected flags (passwordnotreqd, trustedtoauth, admincount,
 haslaps, and enabled=false). It does not verify credentials or infer that a flag
 proves exploitability. Fields not selected remain available through `object`.
 `clues` and JSON reports retain all selected clue objects and their source
-files. Text and Markdown reports surface account clues and descriptions on
-groups with RID 1000 or higher for review.
+files. Text and Markdown reports show populated password fields and
+description/info text containing credential terms. Other nonempty text remains
+available through `clues` and `object`.
 
 ## Contributing
 
@@ -177,32 +176,42 @@ from negative findings when adding support for a collector or relationship.
 
 MIT. See [LICENSE](LICENSE).
 
-## Report output in 0.4.1
+## Report output in 0.5.0
 
-Since 0.4.0, `report` no longer accepts `--goal`. It includes all loaded investigation targets,
-recorded ACL and membership edges, populated property clues, and the recorded
-access, session, GPO, AD CS, and raw-only field material in JSON.
-`--from` traverses the loaded control and membership graph until no new object is
-reachable. It retains every reachable relationship and gives one minimum-hop
-explanation per reached target. Text and Markdown present review findings and
-the reached target paths; they omit collection metadata, routine account flags,
-and full edge and raw-field dumps. The JSON keys `account_findings`,
-`recorded_edges`, `raw_observations`, and,
-with `--from`, `control_reachability`, `controls`, `goal_paths`, and
-`candidate_reachability` expose these materials. See [analysis](docs/analysis.md).
+`report` analyzes the collection globally; it no longer accepts `--from` or
+`--goal`. It finds every principal with a recorded ACL/membership path to the
+loaded investigation targets using reverse graph traversal. A separate typed
+reverse traversal gives one minimum-transition conditional route per principal
+to the high-value and Domain Admins target sets. Text and Markdown show
+interpreted leads, including selected control edges, credential-related text,
+Kerberos account leads, and notable ACEs whose principal is deleted or missing
+from the collection. They omit routine account flags and full edge dumps.
+JSON retains `recorded_edges`, `property_clues`, `account_settings`,
+`raw_observations`, `conditional_reachers`, `conditional_da_reachers`,
+`deleted_reachers`, `deleted_da_reachers`, and `deleted_domain_grants`, with
+source locations and transition prerequisites. Query an identity with `path`,
+`controls`, `route`, or `adcs --from`. Deleted objects remain in recorded JSON
+but do not supply active principal reachability. The report identifies deleted
+principals whose recorded ACEs or former membership lead to an important target,
+plus deleted principals with a direct replication grant combination or control
+ACE on a live domain object. It also shows recorded inbound control and live
+SID-history carriers. SID history
+can supply an ACE grant, subject to token and filtering checks; it does not
+restore the old account or inherit its group membership. See [analysis](docs/analysis.md).
 
 ## Output additions in 0.3
 
-Reports add `extended` (sessions, access, SID history, user rights, policy, AD CS,
-field coverage) and, when a starting principal resolves, `candidate_route`.
-The 0.2 `path` result remains separate and unchanged in scope. New CLI commands
-accept `--format json`; no schema conversion or network service is required.
+Version 0.3 added `extended` (sessions, access, SID history, user rights, policy,
+AD CS, field coverage) and selected-principal `candidate_route`. The latter and
+the selected-principal `path` report keys were removed in 0.5; use `route` and
+`path` for focused queries. CLI commands accept `--format json`.
 See [conditional model and limits](docs/analysis.md).
 
 ## Output changes in 0.2
 
-JSON reports replaced the misleading `path_to_da` key with `path` and added the
-then-current `goal` key, which was removed in 0.4.
+Version 0.2 replaced the misleading `path_to_da` JSON key with `path` and added
+the then-current `goal` key. These report keys were removed in 0.5 and 0.4
+respectively.
 The Python `path_to_da()` helper now means Domain Admins specifically; use
 `path_to_goal()` for the default high-value target set. Reports add domain-scoped
 `dcsync_findings`, `property_clues`, `delegation.rbcd`, and `trusts`. Existing

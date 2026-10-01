@@ -56,6 +56,8 @@ def _p(obj):
 def kerberoastable(g: Graph) -> list[dict]:
     out = []
     for u in g.users:
+        if not g.is_live(u['ObjectIdentifier']):
+            continue
         p = _p(u)
         if p.get("hasspn") and (p.get("samaccountname") or "").lower() != "krbtgt":
             out.append({
@@ -72,13 +74,15 @@ def asreproastable(g: Graph) -> list[dict]:
     return [
         {"name": _p(u).get("samaccountname"), "enabled": _p(u).get("enabled", True)}
         for u in g.users
-        if _p(u).get("dontreqpreauth")
+        if g.is_live(u['ObjectIdentifier']) and _p(u).get("dontreqpreauth")
     ]
 
 
 def delegation(g: Graph) -> dict:
     unconstrained, constrained = [], []
     for obj in g.computers + g.users:
+        if not g.is_live(obj['ObjectIdentifier']):
+            continue
         p = _p(obj)
         if p.get("unconstraineddelegation"):
             unconstrained.append(p.get("samaccountname"))
@@ -95,6 +99,8 @@ def delegation(g: Graph) -> dict:
                                 "to": atd, "targets": targets})
     rbcd = []
     for obj in g.computers:
+        if not g.is_live(obj['ObjectIdentifier']):
+            continue
         principals = []
         for principal in obj.get("AllowedToAct") or []:
             sid = principal.get("ObjectIdentifier")
@@ -118,13 +124,15 @@ def dcsync_findings(g: Graph) -> list[dict]:
     descendants: dict[str, dict[str, list[str]]] = {}
     grants: dict[tuple[str, str], dict[str, dict[str, list[str]]]] = {}
     for domain, principal, right in g.domain_aces:
+        if not g.is_live(domain) or not g.is_live(principal):
+            continue
         if principal not in descendants:
             paths = {principal: [principal]}
             queue = deque([principal])
             while queue:
                 parent = queue.popleft()
                 for member in g.member_edges_rev.get(parent, []):
-                    if member not in paths:
+                    if g.is_live(member) and member not in paths:
                         paths[member] = [member] + paths[parent]
                         queue.append(member)
             descendants[principal] = paths
@@ -161,18 +169,20 @@ def high_value_sids(g: Graph) -> dict[str, str]:
     """Investigation targets and their reasons, not a claim of DA equivalence."""
     out: dict[str, str] = {}
     for sid in g.by_sid:
-        if g.kind(sid) in ("user", "group") and rid_of(sid) in WELL_KNOWN_HIGH_VALUE_RIDS:
+        if g.is_live(sid) and g.kind(sid) in ("user", "group") and rid_of(sid) in WELL_KNOWN_HIGH_VALUE_RIDS:
             out[sid] = "well-known-high-value-rid"
     for sid in dcsync_principal_sids(g):
         out.setdefault(sid, "dcsync-on-domain")
     for dom in g.domain_sids:
+        if not g.is_live(dom):
+            continue
         for principal, right in g.control_edges_rev.get(dom, []):
-            if right in DOMAIN_CONTROL_RIGHTS:
+            if g.is_live(principal) and right in DOMAIN_CONTROL_RIGHTS:
                 out.setdefault(principal, "controls-domain-object")
     for grp in g.groups:
         sid = grp.get("ObjectIdentifier")
         name = (_p(grp).get("name") or "").upper().split("@")[0]
-        if sid and name in NAMED_HIGH_VALUE_GROUPS:
+        if sid and g.is_live(sid) and name in NAMED_HIGH_VALUE_GROUPS:
             out.setdefault(sid, "named-privileged-group")
     return out
 
@@ -182,7 +192,7 @@ def goal_sids(g: Graph, goal: str = "high-value") -> dict[str, str]:
         return high_value_sids(g)
     if goal == "da":
         return {f"{domain}-512": "domain-admins-group" for domain in g.domain_sids
-                if g.kind(f"{domain}-512") == "group"}
+                if g.kind(f"{domain}-512") == "group" and g.is_live(f"{domain}-512")}
     raise ValueError(f"unknown path goal: {goal}")
 
 
@@ -197,13 +207,16 @@ def high_value_members(g: Graph) -> list[tuple[str, list[str], str]]:
         if g.kind(sid) != "group":
             continue
         grp = g.by_sid.get(sid) or {}
-        members = sorted(g.name(m.get("ObjectIdentifier")) for m in (grp.get("Members") or []))
+        members = sorted(g.name(m.get("ObjectIdentifier")) for m in (grp.get("Members") or [])
+                         if g.is_live(m.get("ObjectIdentifier")))
         out.append((g.name(sid), members, reason))
     return sorted(out)
 
 
 def control_rows(g: Graph, sid: str, max_depth: int | None = 2) -> list[tuple[int, str, str, str]]:
     """BFS outbound control+membership edges, retaining object identifiers."""
+    if not g.is_live(sid):
+        return []
     seen = {sid}
     out = []
     frontier = deque([(sid, 0)])
@@ -214,6 +227,8 @@ def control_rows(g: Graph, sid: str, max_depth: int | None = 2) -> list[tuple[in
         edges = [(t, r) for (t, r) in g.control_edges.get(cur, [])]
         edges += [(gr, "MemberOf") for gr in g.member_edges.get(cur, [])]
         for nxt, label in edges:
+            if not g.is_live(nxt):
+                continue
             out.append((depth, cur, label, nxt))
             if nxt not in seen:
                 seen.add(nxt)
@@ -230,6 +245,8 @@ def controls(g: Graph, sid: str, max_depth: int | None = 2) -> list[tuple[int, s
 def shortest_path(g: Graph, start_sid: str, goal_sids: set[str]) -> list[tuple[str, str | None]] | None:
     """Shortest control/membership path start -> any goal.
     Returns [(sid, edge_used_to_reach_it), …]; first hop's edge is None."""
+    if not g.is_live(start_sid):
+        return None
     prev: dict[str, tuple[str | None, str | None]] = {start_sid: (None, None)}
     q = deque([start_sid])
     goal = None
@@ -241,7 +258,7 @@ def shortest_path(g: Graph, start_sid: str, goal_sids: set[str]) -> list[tuple[s
         nexts = [(t, r) for (t, r) in g.control_edges.get(cur, [])]
         nexts += [(gr, "MemberOf") for gr in g.member_edges.get(cur, [])]
         for nxt, label in nexts:
-            if nxt not in prev:
+            if g.is_live(nxt) and nxt not in prev:
                 prev[nxt] = (cur, label)
                 q.append(nxt)
     if goal is None:
@@ -277,7 +294,7 @@ def who_can_reach_high_value(g: Graph, goal: str = "high-value") -> dict[str, tu
         inbound = list(g.control_edges_rev.get(cur, []))
         inbound += [(m, "MemberOf") for m in g.member_edges_rev.get(cur, [])]
         for src, right in inbound:
-            if src not in dist:
+            if g.is_live(src) and src not in dist:
                 dist[src] = dist[cur] + 1
                 prev[src] = (cur, right)
                 q.append(src)
@@ -298,11 +315,14 @@ def who_can_reach_high_value(g: Graph, goal: str = "high-value") -> dict[str, tu
 def local_admin_of(g: Graph, sid: str) -> list[tuple[str, str]]:
     """Computers where `sid` (directly, or via a group it belongs to) has a local
     edge. Only as good as what was collected (see coverage())."""
+    if not g.is_live(sid):
+        return []
     principals = {sid} | set(_transitive_groups(g, sid))
     out = []
     for p in principals:
         for comp_sid, label in g.admin_edges.get(p, []):
-            out.append((g.name(comp_sid), label))
+            if g.is_live(comp_sid):
+                out.append((g.name(comp_sid), label))
     return sorted(set(out))
 
 
@@ -311,7 +331,7 @@ def _transitive_groups(g: Graph, sid: str) -> set[str]:
     while q:
         cur = q.popleft()
         for gr in g.member_edges.get(cur, []):
-            if gr not in seen:
+            if g.is_live(gr) and gr not in seen:
                 seen.add(gr)
                 q.append(gr)
     return seen

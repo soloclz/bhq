@@ -157,6 +157,11 @@ class Graph:
     def kind(self, sid: str) -> str:
         return self._kind.get(sid, "?")
 
+    def is_live(self, sid: str) -> bool:
+        """A loaded object that the collector did not mark as deleted."""
+        obj = self.by_sid.get(sid)
+        return obj is not None and obj.get("IsDeleted") is not True
+
     def sid_of(self, query: str) -> str | None:
         """Resolve a name to a SID. Matches full name, samaccountname, or the
         pre-@ short form, case-insensitively. Ambiguous short names deliberately

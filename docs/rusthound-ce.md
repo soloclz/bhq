@@ -75,6 +75,13 @@ not all v2.5.20 collection fields or analysis paths.
 | Checker replaces known target FQDNs with SIDs and retains unresolved identifiers | Resolves loaded targets to names; preserves unknown identifiers without inventing SPNs |
 | Six additional AD CS collection types can be emitted | Loads all six; analyzes recorded template conditions, grants, publication and certificate/policy references; no automatic DA edge |
 
+RustHound-CE v2.5.20 also sends the LDAP Show Deleted control in its
+[collection search](https://github.com/g0h4n/RustHound-CE/blob/v2.5.20/src/transport/ldap.rs)
+and maps received `isDeleted` attributes to `IsDeleted` on object records.
+This does not guarantee that the collecting principal can read Deleted Objects.
+bhq preserves received records but separates historical SID grants and former
+membership from active principal reachability. See [analysis](analysis.md).
+
 Source references:
 [writer](https://github.com/g0h4n/RustHound-CE/blob/aeb28db95f0149a1579c2517536083e150ae2803/src/json/maker/common.rs),
 [shared structures](https://github.com/g0h4n/RustHound-CE/blob/aeb28db95f0149a1579c2517536083e150ae2803/src/objects/common.rs),

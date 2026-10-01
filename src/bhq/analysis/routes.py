@@ -24,6 +24,12 @@ def relationships(g):
         # Unresolved objects stay visible in observations, not traversable by name guesses.
         if src not in g.by_sid or dst not in g.by_sid:
             return
+        # A deleted account cannot supply its principal state. Its SID can
+        # still matter when a live account carries that SID in SID history.
+        if g.by_sid[src].get('IsDeleted') is True and source_state != 'sid':
+            return
+        if g.by_sid[dst].get('IsDeleted') is True and target_state != 'sid':
+            return
         rows.append({'source': ref(g, src), 'source_state': source_state, 'target': ref(g, dst),
                      'target_state': target_state, 'relationship': label, 'evidence': proof,
                      'requires': list(requires)})
@@ -102,8 +108,7 @@ def relationships(g):
                         add(principal['id'], 'principal', computer['id'], 'host' if right == 'AdminTo' else 'remote',
                             'GPOChanges:' + right, [change['evidence']],
                             ['collector-projected local membership is applied; verify filtering, precedence and subsequent changes'])
-    # Deleted objects cannot be intermediate identities either.
-    return [r for r in rows if not any(g.by_sid[r[k]['id']].get('IsDeleted') is True for k in ('source', 'target'))]
+    return rows
 
 
 def route(g, start, goals, target_state='principal'):
@@ -178,3 +183,39 @@ def reachable(g, start, goals):
             'goal_routes': goal_routes,
             'limitations': ['Conditional transitions require the listed prerequisites.',
                             'AD CS and trust-boundary transitions are not modeled.']}
+
+
+def global_goal_routes(g, goals):
+    """One minimum-transition explanation per principal, found in one reverse BFS.
+
+    The result is an investigation lead. Every transition retains its own
+    prerequisites and source; no credential or effective access is inferred.
+    """
+    incoming = defaultdict(list)
+    for edge in relationships(g):
+        state = (edge['target']['id'], edge['target_state'])
+        incoming[state].append(edge)
+
+    queue = deque((sid, 'principal') for sid in sorted(goals) if g.is_live(sid))
+    next_step = {state: None for state in queue}
+    while queue:
+        state = queue.popleft()
+        for edge in incoming[state]:
+            source = (edge['source']['id'], edge['source_state'])
+            if source not in next_step:
+                next_step[source] = (state, edge)
+                queue.append(source)
+
+    routes = []
+    for sid in g.by_sid:
+        state = (sid, 'principal')
+        if sid in goals or not g.is_live(sid) or g.kind(sid) not in {'user', 'group', 'computer'}:
+            continue
+        if state not in next_step:
+            continue
+        steps = []
+        while next_step[state] is not None:
+            state, edge = next_step[state]
+            steps.append(edge)
+        routes.append({'start': ref(g, sid), 'target': ref(g, state[0]), 'steps': steps})
+    return sorted(routes, key=lambda row: (len(row['steps']), row['start']['name'], row['start']['id']))

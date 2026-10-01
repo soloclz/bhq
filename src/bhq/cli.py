@@ -1,6 +1,6 @@
 """`bhq` — offline BloodHound analysis CLI.
 
-    bhq report <path> [--from alice]     recorded material and reachable relations
+    bhq report <path>                    global findings and reachable relations
     bhq path   <path> <from>               shortest recorded path -> selected targets
     bhq controls <path> <principal> [-d N] what a principal controls (N hops)
     bhq kerberoast <path>                  users with SPNs
@@ -28,8 +28,7 @@ from .analysis import observations, policy, pki, routes, inventory, presentation
 
 def _load(args):
     # Every subcommand takes the collection path first. A bare word that is not a
-    # path is almost always an option written positionally (`bhq report from bob`
-    # instead of `bhq report ./bh --from bob`); argparse cannot tell, so say so.
+    # The collection path is required before command-specific arguments.
     if not os.path.exists(args.path) and "/" not in args.path and not args.path.endswith(".zip"):
         print(f"[X] '{args.path}' is not a collection path.\n"
               f"    Usage: bhq {args.command} <path> ...   (path comes first; options use --)",
@@ -58,7 +57,7 @@ def _resolve(g, name):
 
 
 def cmd_report(args):
-    out = report.render(_load(args), args.frm, fmt=args.format)
+    out = report.render(_load(args), fmt=args.format)
     if args.output:
         with open(args.output, "w", encoding="utf-8") as fh:
             fh.write(out if out.endswith("\n") else out + "\n")
@@ -269,7 +268,6 @@ def build_parser() -> argparse.ArgumentParser:
         return s
 
     s = add("report", cmd_report, "combined AD analysis and collection limits")
-    s.add_argument("--from", dest="frm", help="starting principal for exhaustive relationship traversal")
     s.add_argument("--format", choices=["text", "md", "json"], default="text", help="output format (default text)")
     s.add_argument("-o", "--output", help="write to this file (for evidence) instead of stdout")
 
@@ -335,13 +333,13 @@ def main(argv=None) -> int:
     parser = build_parser()
     # Every subcommand takes the collection path as its first positional, so a
     # stray extra word is nearly always an option written positionally
-    # (`bhq report from bob`). argparse would just say "unrecognized arguments",
-    # which sends people looking in the wrong place.
+    # (for example `bhq path from bob`). argparse would otherwise just say
+    # "unrecognized arguments", which obscures the positional collection path.
     args, extra = parser.parse_known_args(argv)
     if extra:
         print(f"[X] unexpected argument(s): {' '.join(extra)}\n"
               f"    bhq {args.command} takes the collection path first; "
-              f"options are passed with -- (e.g. `bhq report ./bh --from bob`).",
+              f"options are passed with -- (e.g. `bhq report ./bh --format md`).",
               file=sys.stderr)
         return 2
     args.func(args)

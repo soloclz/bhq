@@ -339,18 +339,18 @@ def test_report_formats(tmp_path):
     _write(tmp_path)
     g = load(str(tmp_path))
     # text mentions the kerberoastable account and the control edge
-    txt = report.render(g, "alice", fmt="text")
+    txt = report.render(g, fmt="text")
     assert "alice" in txt and "ForceChangePassword" in txt
     # Markdown selects relationships that merit review; JSON retains the graph.
-    md = report.render(g, "alice", fmt="md")
+    md = report.render(g, fmt="md")
     assert md.startswith("# BloodHound")
     assert "## Collection" not in md and "## Recorded account settings" not in md
     assert "## Object control for review" in md
     assert "GenericAll" in md and "t_groups.json" in md
     # json round-trips and carries the structured findings
-    data = json.loads(report.render(g, "alice", fmt="json"))
+    data = json.loads(report.render(g, fmt="json"))
     assert data["dcsync"] == ["SRVADMINS@TEST.LOCAL", "alice"]
-    assert data["path"]["path"][0]["name"] == "alice"
+    assert any(row['name'] == 'alice' for row in data['da_reachers'])
     assert any(k["name"] == "alice" for k in data["kerberoastable"])
     assert any(row["right"] == "GetChanges" and row["evidence"]["source_file"] == "t_domains.json"
                for row in data["replication_aces"])
@@ -377,20 +377,18 @@ def test_report_exhausts_control_graph_and_keeps_alternate_edges(tmp_path):
     groups["data"][0]["Members"] = [{"ObjectIdentifier": DAVE}]
     groups_file.write_text(json.dumps(groups))
 
-    data = report.build(load(tmp_path), "alice")
-    da_path = next(row["path"] for row in data["goal_paths"] if row["target"]["id"] == DA)
-    assert [step["id"] for step in da_path] == [ALICE, BOB, CAROL, DAVE, DA]
-    assert da_path[1]["evidence"][0]["source_file"] == "t_users.json"
-    assert len(data["control_reachability"]) == len({row["id"] for row in data["control_reachability"]})
-    assert any(row["from_id"] == DAVE and row["to_id"] == ALICE for row in data["controls"])
-    alternatives = [row for row in data["controls"] if row["from_id"] == BOB and row["to_id"] == CAROL]
+    data = report.build(load(tmp_path))
+    da_path = next(row['path'] for row in data['da_reachers'] if row['name'] == 'alice')
+    assert [step['name'] for step in da_path] == ['alice', 'bob', 'carol', 'dave', 'DOMAIN ADMINS@TEST.LOCAL']
+    alternatives = [row for row in data['recorded_edges'] if row['from_id'] == BOB and row['to_id'] == CAROL]
     assert {row["edge"] for row in alternatives} == {"GenericWrite", "WriteDacl"}
     assert all(row["evidence"][0]["source_file"] == "t_users.json" for row in alternatives)
+    assert any(row['from_id'] == DAVE and row['to_id'] == ALICE for row in data['recorded_edges'])
     assert any(row["from_id"] == BOB and row["to_id"] == CAROL for row in data["recorded_edges"])
     assert any(row["value"] == "retained material" for row in data["raw_observations"])
     md = report.as_md(data)
-    assert "4 hops at the deepest edge" in md
-    assert "--ForceChangePassword [source: t_users.json" in md
+    assert 'alice (4 hops)' in md
+    assert 'ForceChangePassword' in md
     assert "retained material" not in md and "NewFeature.Finding" not in md
 
 
@@ -416,7 +414,7 @@ def test_report_does_not_dump_builtin_descriptions_or_normal_account_flags(tmp_p
     md = report.as_md(data)
     assert len([row for row in data["property_clues"] if "description" in row["properties"]]) == 41
     assert "Generic group description" not in md
-    assert "Review application role" in md
+    assert "Review application role" not in md
     assert "dontreqpreauth=false" not in md and "lastlogon=0" not in md
     assert not any(signal['field'] == 'dontreqpreauth' for row in data['account_findings']
                    if row['account']['id'] == ALICE for signal in row['signals'])
@@ -429,6 +427,12 @@ def test_report_rejects_removed_goal_option(tmp_path, capsys):
     _write(tmp_path)
     assert cli.main(["report", str(tmp_path), "--goal", "da"]) == 2
     assert "unexpected argument(s): --goal da" in capsys.readouterr().err
+
+
+def test_report_rejects_identity_scope(tmp_path, capsys):
+    _write(tmp_path)
+    assert cli.main(['report', str(tmp_path), '--from', 'alice']) == 2
+    assert 'unexpected argument(s): --from alice' in capsys.readouterr().err
 
 
 def test_missing_empty_and_malformed_collections_are_rejected(tmp_path):
@@ -489,5 +493,5 @@ def test_ambiguous_multidomain_short_name_requires_qualification(tmp_path):
     assert g.sid_of("alice") is None
     assert g.sid_candidates("alice") == {ALICE, other_sid}
     assert g.sid_of("ALICE@OTHER.LOCAL") == other_sid
-    data = report.build(g, "alice")
-    assert "ambiguous" in data["error"]
+    with pytest.raises(SystemExit, match='1'):
+        cli.main(['path', str(tmp_path), 'alice'])

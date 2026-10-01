@@ -1,4 +1,4 @@
-# Recorded data and conditional analysis (bhq 0.4.1)
+# Recorded data and conditional analysis (bhq 0.5.0)
 
 bhq is an offline analyzer. These commands read a saved collection; they do not
 connect to hosts, authenticate, change AD objects, or execute the routes shown.
@@ -9,7 +9,9 @@ legacy ACL/membership queries and report presentation.
 
 ```sh
 bhq report ./collection --format md -o report.md
-bhq report ./collection --from alice --format md -o alice-report.md
+bhq report ./collection --format json -o report.json
+bhq path ./collection alice --goal da
+bhq controls ./collection alice -d 3
 bhq sessions ./collection
 bhq access ./collection
 bhq policy ./collection
@@ -23,23 +25,35 @@ bhq route ./collection alice --to WS01.TEST.LOCAL --state host
 
 These commands accept `--format json` for structured records and source references.
 The text and Markdown report select settings and relationships that merit review:
-account clues, Kerberos password signals, replication grants, control from outside
+credential-related text, Kerberos account leads, replication grants, control from outside
 the investigation-target set, reachable targets, delegation, trust, host access,
 GPO scope, and AD CS conditions when recorded. It does not repeat collection
-metadata, ordinary false account flags, every ACL edge, or raw field values.
+metadata, ordinary false account flags, every ACL edge, or the full raw field inventory.
 Use `clues`, `controls`, `coverage`, and `object` for focused inspection. The JSON
 report retains all recorded ACL and membership edges, property clues, account
-settings, and populated raw-only field material. `--from` analyzes all reachable
-control and membership edges and conditional state transitions, then shows one
-minimum-hop explanation for each reached high-value target in the readable report.
-The explanation minimizes the number of recorded edges; it does not rank
-reliability or effort, and other relationships remain in the edge list. Cycles
-terminate after each object or typed state has been visited. `report` has no
-`--goal` option; `path`, `reachers`, and `route` retain it for focused queries.
-The JSON keeps `extended`, `path`, and `candidate_route` for existing consumers
-and adds complete `recorded_edges`, `raw_observations`, `control_reachability`,
-`goal_paths`, and `candidate_reachability`. `bhq object` works on all six AD CS
-object types.
+settings, and populated raw-only field material. Global reverse traversals give
+one minimum-edge recorded path and one minimum-transition conditional path per
+principal to the loaded high-value or Domain Admins target sets. They do not rank
+reliability or effort, and cycles terminate after each object or typed state has
+been visited. The JSON exposes `recorded_edges`, `raw_observations`,
+`conditional_reachers`, `conditional_da_reachers`, `deleted_reachers`,
+`deleted_da_reachers`, and `deleted_domain_grants`. `report` has no `--from` or
+`--goal` option; `path`, `reachers`, and `route` answer focused questions.
+`bhq object` works on all six AD CS object types.
+
+RustHound-CE v2.5.20 requests deleted objects through the
+[LDAP Show Deleted control](https://github.com/g0h4n/RustHound-CE/blob/v2.5.20/src/transport/ldap.rs).
+[Visibility depends on the collecting principal](https://learn.microsoft.com/en-us/troubleshoot/windows-server/active-directory/non-administrators-view-deleted-object-container).
+bhq keeps any received deleted object and its ACEs in recorded JSON, but excludes it from
+active ACL/membership reachability. For each deleted principal with a recorded
+path to an important live target, the report shows one chain, its ACE or former
+membership entry point, any live SID-history carrier, and recorded inbound
+control. Direct replication grant combinations and control ACEs on the domain
+object are also highlighted. Former membership is a historical lead; SID history
+does not inherit it. An ACE addressed to that SID can contribute a conditional route from a live
+SID-history carrier, with token and SID-filtering requirements. A notable ACE on
+a live object whose principal is deleted or unresolved also appears separately.
+Deleted-object ACLs remain inspectable through `object`.
 
 | Command | Analysis | What the result does not establish |
 |---|---|---|
@@ -90,7 +104,9 @@ there is no guessed host edge. GPO scope produces candidate transitions only for
 loaded GPOs with no recorded inheritance block or unknown inheritance status.
 Explicit GPOChanges projections are labeled separately from observed local groups.
 
-Deleted objects and missing endpoints do not contribute transitions. Session
+Deleted principal states and missing endpoints do not contribute transitions.
+A deleted SID can supply an ACL grant through a live principal's recorded SID
+history, subject to the stated token and SID-filtering requirements. Session
 entries with mismatched computers, failed/partial collection, or unresolved users
 do not contribute transitions either. Observations remain queryable even when
 excluded from the graph. An empty result is `no-modeled-route`, not proof that no

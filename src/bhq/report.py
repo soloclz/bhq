@@ -8,10 +8,11 @@ is the terminal default.
 from __future__ import annotations
 
 import json
-from collections import defaultdict
+import re
+from collections import defaultdict, deque
 
 from . import queries
-from .loader import CONTROL_RIGHTS, DCSYNC_RIGHTS, Graph, rid_of
+from .loader import CONTROL_RIGHTS, DCSYNC_RIGHTS, Graph
 from .analysis import observations, policy, pki, routes, inventory, presentation
 from .analysis.common import evidence, ref
 
@@ -49,6 +50,9 @@ def _all_recorded_edges(g: Graph) -> list[dict]:
         rows.extend((source, 'MemberOf', target) for target in groups)
     return [{'from_id': source, 'from': g.name(source), 'from_kind': g.kind(source),
              'to_id': target, 'to': g.name(target), 'to_kind': g.kind(target),
+             'from_resolved': source in g.by_sid, 'to_resolved': target in g.by_sid,
+             'from_deleted': (g.by_sid.get(source) or {}).get('IsDeleted') is True,
+             'to_deleted': (g.by_sid.get(target) or {}).get('IsDeleted') is True,
              'edge': relationship,
              'evidence': provenance.get((source, relationship, target), [])}
             for source, relationship, target in sorted(set(rows))]
@@ -62,7 +66,8 @@ def _replication_aces(g: Graph) -> list[dict]:
             if ace.get('RightName') in DCSYNC_RIGHTS and ace.get('PrincipalSID'):
                 principal = ace['PrincipalSID']
                 rows.append({'domain': ref(g, sid), 'principal': ref(g, principal),
-                             'right': ace['RightName'], 'evidence': evidence(g, sid, f'Aces[{i}]')})
+                             'right': ace['RightName'], 'evidence': evidence(g, sid, f'Aces[{i}]'),
+                             'principal_live': g.is_live(principal), 'domain_live': g.is_live(sid)})
     return rows
 
 
@@ -89,7 +94,11 @@ def _account_findings(g: Graph) -> list[dict]:
     rows = []
     for obj in g.users:
         sid = obj['ObjectIdentifier']
+        if not g.is_live(sid):
+            continue
         props = obj.get('Properties') or {}
+        if props.get('enabled') is False:
+            continue
         signals = []
 
         def add(field: str, explanation: str) -> None:
@@ -102,58 +111,111 @@ def _account_findings(g: Graph) -> list[dict]:
                 'SPN account: review the long-term key and service use')
         if props.get('dontreqpreauth') is True:
             add('dontreqpreauth', 'pre-authentication disabled: review the account password')
-        if props.get('passwordnotreqd') is True:
-            add('passwordnotreqd', 'password not required flag: verify the current account policy')
-        if props.get('pwdneverexpires') is True:
-            add('pwdneverexpires', 'password does not expire: review ownership and rotation')
-        if props.get('pwdlastset') == 0:
-            add('pwdlastset', 'password last-set value is zero: verify account state')
-        if props.get('admincount') is True:
-            add('admincount', 'protected-account marker: compare recorded membership and intended role')
         if signals:
             rows.append({'account': ref(g, sid), 'enabled': props.get('enabled'),
-                         'signals': signals})
+                         'admincount': props.get('admincount'), 'signals': signals})
     return rows
 
 
-def _recorded_reachability(g: Graph, start: str) -> tuple[list[dict], list[dict], dict[str, tuple[str, str] | None]]:
+def _sid_history_carriers(g: Graph) -> dict[str, list[dict]]:
+    carriers = defaultdict(list)
+    for row in observations.sid_history(g):
+        historical = row['historical']['id']
+        principal = row['principal']['id']
+        if historical and g.is_live(principal):
+            carriers[historical].append({'principal': row['principal'], 'evidence': row['evidence']})
+    return carriers
+
+
+def _deleted_domain_grants(g: Graph) -> list[dict]:
+    """Significant direct domain ACEs addressed to a deleted principal SID."""
+    carriers = _sid_history_carriers(g)
+    rows = []
+    for domain in g.domains:
+        domain_sid = domain['ObjectIdentifier']
+        if not g.is_live(domain_sid):
+            continue
+        by_principal = defaultdict(list)
+        for index, ace in enumerate(domain.get('Aces') or []):
+            sid, right = ace.get('PrincipalSID'), ace.get('RightName')
+            if (sid in g.by_sid and g.kind(sid) in {'user', 'group', 'computer'}
+                    and g.by_sid[sid].get('IsDeleted') is True
+                    and right in DCSYNC_RIGHTS | queries.DOMAIN_CONTROL_RIGHTS):
+                by_principal[sid].append({'right': right,
+                                          'evidence': evidence(g, domain_sid, f'Aces[{index}]')})
+        for sid, grants in by_principal.items():
+            rights = {grant['right'] for grant in grants}
+            dcsync = 'DCSync' in rights or {'GetChanges', 'GetChangesAll'} <= rights
+            controls_domain = bool(rights & queries.DOMAIN_CONTROL_RIGHTS)
+            if dcsync or controls_domain:
+                rows.append({'deleted': ref(g, sid), 'domain': ref(g, domain_sid),
+                             'grants': grants, 'dcsync_combination': dcsync,
+                             'domain_control': controls_domain,
+                             'sid_history_carriers': carriers[sid]})
+    return sorted(rows, key=lambda row: (row['deleted']['name'], row['domain']['name']))
+
+
+def _deleted_principal_paths(g: Graph, goals: dict[str, str]) -> list[dict]:
+    """Find deleted grant holders that could reach a live goal if their SID is usable.
+
+    Reverse traversal crosses only live objects. The deleted principal is a
+    single starting SID; deleted objects never become intermediate identities.
+    """
+    next_edge = {sid: None for sid in goals if g.is_live(sid)}
+    distance = {sid: 0 for sid in next_edge}
+    queue = deque(sorted(next_edge))
+    while queue:
+        target = queue.popleft()
+        inbound = list(g.control_edges_rev.get(target, []))
+        inbound += [(sid, 'MemberOf') for sid in g.member_edges_rev.get(target, [])]
+        for source, relationship in inbound:
+            if g.is_live(source) and source not in next_edge:
+                next_edge[source] = (target, relationship)
+                distance[source] = distance[target] + 1
+                queue.append(source)
+
     provenance = _edge_evidence(g)
-    parents: dict[str, tuple[str, str] | None] = {start: None}
-    distances = {start: 0}
-    edges = []
-    emitted = set()
-    for depth, source, relationship, target in queries.control_rows(g, start, max_depth=None):
-        key = (source, relationship, target)
-        if key not in emitted:
-            emitted.add(key)
-            edges.append({'depth': depth + 1, 'from_id': source, 'from': g.name(source),
-                          'to_id': target, 'to': g.name(target), 'edge': relationship,
-                          'evidence': provenance.get(key, [])})
-        if target not in parents:
-            parents[target] = (source, relationship)
-            distances[target] = depth + 1
-    nodes = [{'id': sid, 'name': g.name(sid), 'kind': g.kind(sid), 'hops': distances[sid],
-              'first_parent': parents[sid][0], 'via': parents[sid][1]}
-             for sid in parents if sid != start]
-    return nodes, edges, parents
+    carriers = _sid_history_carriers(g)
+
+    findings = []
+    for sid, obj in g.by_sid.items():
+        if obj.get('IsDeleted') is not True or g.kind(sid) not in {'user', 'group', 'computer'}:
+            continue
+        outgoing = list(g.control_edges.get(sid, []))
+        outgoing += [(target, 'MemberOf') for target in g.member_edges.get(sid, [])]
+        # An ACE addressed to the historical SID may apply through SID history.
+        # A deleted account's old MemberOf edge is not inherited that way.
+        candidates = [(relationship == 'MemberOf', distance[target] + 1, target, relationship)
+                      for target, relationship in outgoing if target in distance]
+        if not candidates:
+            continue
+        old_membership, _, target, relationship = min(candidates)
+        steps = []
+        source = sid
+        while True:
+            steps.append({'source': ref(g, source), 'target': ref(g, target),
+                          'relationship': relationship,
+                          'evidence': provenance.get((source, relationship, target), [])})
+            source = target
+            continuation = next_edge[target]
+            if continuation is None:
+                break
+            target, relationship = continuation
+        reached_goal = source
+        incoming = []
+        for inbound_source, right in g.control_edges_rev.get(sid, []):
+            if g.is_live(inbound_source):
+                incoming.append({'source': ref(g, inbound_source), 'relationship': right,
+                                 'evidence': provenance.get((inbound_source, right, sid), [])})
+        findings.append({'deleted': ref(g, sid), 'target': ref(g, reached_goal),
+                         'target_reason': goals[reached_goal], 'steps': steps,
+                         'first_step_kind': 'historical-membership' if old_membership else 'ace',
+                         'sid_history_carriers': carriers[sid] if not old_membership else [],
+                         'incoming_control': incoming})
+    return sorted(findings, key=lambda row: (len(row['steps']), row['deleted']['name'], row['deleted']['id']))
 
 
-def _path_from_parents(g: Graph, parents: dict, target: str,
-                       edge_evidence: dict[tuple[str, str, str], list[dict]]) -> list[dict]:
-    chain = []
-    current = target
-    while parents[current] is not None:
-        source, relationship = parents[current]
-        chain.append({'id': current, 'name': g.name(current), 'kind': g.kind(current),
-                      'via': relationship,
-                      'evidence': edge_evidence.get((source, relationship, current), [])})
-        current = source
-    chain.append({'id': current, 'name': g.name(current), 'kind': g.kind(current),
-                  'via': None, 'evidence': []})
-    return list(reversed(chain))
-
-
-def build(g: Graph, start_name: str | None = None) -> dict:
+def build(g: Graph) -> dict:
     targets = queries.goal_sids(g, 'high-value')
     da_targets = queries.goal_sids(g, 'da')
     data: dict = {
@@ -192,7 +254,11 @@ def build(g: Graph, start_name: str | None = None) -> dict:
             for sid, (hops, chain) in sorted(
                 queries.who_can_reach_high_value(g, 'da').items(), key=lambda kv: (kv[1][0], g.name(kv[0])))
         ],
-        "from": start_name,
+        "conditional_reachers": routes.global_goal_routes(g, targets),
+        "conditional_da_reachers": routes.global_goal_routes(g, da_targets),
+        "deleted_reachers": _deleted_principal_paths(g, targets),
+        "deleted_da_reachers": _deleted_principal_paths(g, da_targets),
+        "deleted_domain_grants": _deleted_domain_grants(g),
         "extended": {
             "access": observations.local_access(g), "sessions": observations.sessions(g), "sid-history": observations.sid_history(g),
             "user-rights": observations.user_rights(g), "policy": policy.policy(g),
@@ -200,44 +266,6 @@ def build(g: Graph, start_name: str | None = None) -> dict:
         },
     }
     data['raw_observations'] = inventory.populated_raw(g, data['extended']['coverage'])
-    if start_name:
-        sid = g.sid_of(start_name)
-        if not sid:
-            candidates = g.sid_candidates(start_name)
-            if candidates:
-                choices = ", ".join(f"{g.qualified_name(s)} [{s}]" for s in sorted(candidates))
-                data["error"] = f"principal is ambiguous: {start_name}; use a qualified name or SID ({choices})"
-            else:
-                data["error"] = f"principal not found: {start_name}"
-            return data
-        data['selected_adcs'] = pki.adcs(g, sid)
-        nodes, edges, parents = _recorded_reachability(g, sid)
-        data['control_reachability'] = nodes
-        data['controls'] = edges
-        edge_evidence = {(edge['from_id'], edge['edge'], edge['to_id']): edge['evidence']
-                         for edge in edges}
-        data['goal_paths'] = [
-            {'target': ref(g, target), 'reason': reason, 'domain_admins': target in da_targets,
-             'path': _path_from_parents(g, parents, target, edge_evidence)}
-            for target, reason in sorted(targets.items()) if target in parents
-        ]
-        data['candidate_reachability'] = routes.reachable(g, sid, targets)
-        candidates = data['candidate_reachability']['goal_routes']
-        best = min(candidates, key=lambda row: len(row['steps']), default=None)
-        data['candidate_route'] = {
-            'start': ref(g, sid), 'target_state': 'principal',
-            'goals': [ref(g, target) for target in sorted(targets)],
-            'steps': best['steps'] if best else None,
-            'status': 'candidate' if best else 'no-modeled-route',
-            'limitations': data['candidate_reachability']['limitations'],
-        }
-        path, goals = queries.path_to_goal(g, sid, 'high-value')
-        data["path"] = {
-            "goals": goals,
-            "endpoint_reason": targets.get(path[-1][0]) if path else None,
-            "path": [{"name": g.name(s), "kind": g.kind(s), "via": lbl} for s, lbl in path] if path else None,
-        }
-        data["local"] = [{"computer": n, "right": r} for n, r in queries.local_admin_of(g, sid)]
     return data
 
 
@@ -273,10 +301,6 @@ def _material_sections(data: dict) -> list[tuple[str, list[str]]]:
     adcs = ext['adcs']
     if any(adcs[key] for key in ('objects', 'cas', 'templates', 'publications', 'issuance_policies')):
         sections.append(('AD CS conditions', presentation.lines('adcs', adcs, True)[1:]))
-        if 'selected_adcs' in data:
-            selected = data['selected_adcs']
-            sections.append(('AD CS for selected identity',
-                             presentation.lines('adcs', selected, True)[1:]))
 
     coverage = ext['coverage']
     if coverage['unmodeled_ace_rights']:
@@ -286,45 +310,6 @@ def _material_sections(data: dict) -> list[tuple[str, list[str]]]:
         ]))
     if coverage['unhandled_files']:
         sections.append(('JSON files outside the loader', coverage['unhandled_files']))
-    return sections
-
-
-def _from_sections(data: dict) -> list[tuple[str, list[str]]]:
-    if not data.get('from') or data.get('error'):
-        return []
-    sections = []
-    path_lines = [
-        f"{row['target']['name']} [{row['target']['id']}] "
-        f"({'Domain Admins' if row['domain_admins'] else row['reason']}): "
-        + ' '.join((f"--{step['via']} [source: {_proof(step['evidence'])}]--> " if step['via'] else '')
-                   + step['name'] for step in row['path'])
-        for row in data['goal_paths']
-    ]
-    sections.append(('Recorded paths to high-value targets', [
-        'Minimum-edge explanations; each operation and effective access still require confirmation.',
-        *(path_lines or ['(no recorded ACL/membership path to a loaded target)']),
-    ]))
-
-    candidate = data['candidate_reachability']
-    sections.append(('Traversal scope', [
-        f"Recorded ACL/membership graph: {len(data['control_reachability']) + 1} reached objects, "
-        f"{len(data['controls'])} edges, "
-        f"{max((row['depth'] for row in data['controls']), default=0)} hops at the deepest edge.",
-        f"Conditional graph: {len(candidate['states']) + 1} reached states and "
-        f"{len(candidate['edges'])} transitions; each transition requires separate confirmation.",
-        'Complete edges, states, prerequisites and source locations are retained in JSON.',
-    ]))
-    if candidate['goal_routes']:
-        sections.append(('Conditional routes to high-value targets', [
-            f"{row['target']['name']} [{row['target']['id']}] ({row['reason']}): "
-            + (' '.join(step['relationship'] + '→' + step['target']['name']
-                        for step in row['steps']) or 'already at target')
-            for row in candidate['goal_routes']
-        ]))
-    if data['local']:
-        sections.append(('Local access for selected identity', [
-            f"{row['computer']}: {row['right']}" for row in data['local']
-        ]))
     return sections
 
 
@@ -370,7 +355,9 @@ def _reviewable_control_lines(data: dict) -> list[str]:
     targets = {row['id']: row['reason'] for row in data['targets']}
     grouped = defaultdict(list)
     for edge in data['recorded_edges']:
-        if edge['edge'] == 'MemberOf' or edge['from_id'] in targets:
+        if (edge['edge'] == 'MemberOf' or edge['from_id'] in targets
+                or not edge['from_resolved'] or not edge['to_resolved']
+                or edge['from_deleted'] or edge['to_deleted']):
             continue
         if (edge['to_id'] in targets or edge['to_kind'] in {'domain', 'gpo', 'ou', 'certtemplate', 'enterpriseca'}
                 or edge['edge'] in {'ForceChangePassword', 'AddMember', 'AddSelf', 'AddKeyCredentialLink', 'ReadGMSAPassword'}):
@@ -385,6 +372,108 @@ def _reviewable_control_lines(data: dict) -> list[str]:
     return lines
 
 
+_CREDENTIAL_TERM = re.compile(r'\b(?:password|passwd|pwd|passphrase|credential|secret|token|api[_ -]?key)\b', re.I)
+_EXPLICIT_SECRET_FIELDS = {'userpassword', 'unixpassword', 'unicodepassword', 'sfupassword'}
+
+
+def _credential_text_lines(data: dict) -> list[str]:
+    lines = []
+    for row in data['property_clues']:
+        if row['kind'] not in {'user', 'computer', 'group'}:
+            continue
+        for field, value in row['properties'].items():
+            if field not in _EXPLICIT_SECRET_FIELDS and not (
+                    field in {'description', 'info'} and _CREDENTIAL_TERM.search(str(value))):
+                continue
+            excerpt = str(value).replace('\n', ' ').replace('\r', ' ')[:160]
+            lines.append(f"{row['kind']} {row['name']} [{row['id']}]: {field}="
+                         f"{json.dumps(excerpt, ensure_ascii=False)} [source: {row['source_file']}]"
+                         + (' [truncated; inspect object]' if len(str(value)) > 160 else ''))
+    return lines
+
+
+def _unresolved_control_lines(data: dict) -> list[str]:
+    """Historical or unknown ACE principals on notable live targets."""
+    targets = {row['id'] for row in data['targets']}
+    explained_deleted = {row['deleted']['id'] for key in (
+        'deleted_reachers', 'deleted_da_reachers', 'deleted_domain_grants')
+        for row in data[key]}
+    lines = []
+    for edge in data['recorded_edges']:
+        if edge['edge'] == 'MemberOf' or edge['to_deleted'] or not edge['to_resolved']:
+            continue
+        if edge['from_resolved'] and not edge['from_deleted']:
+            continue
+        if edge['from_deleted'] and edge['from_id'] in explained_deleted:
+            continue
+        if (edge['to_id'] not in targets
+                and edge['to_kind'] not in {'domain', 'gpo', 'ou', 'certtemplate', 'enterpriseca'}
+                and edge['edge'] not in {'ForceChangePassword', 'AddMember', 'AddSelf',
+                                        'AddKeyCredentialLink', 'ReadGMSAPassword'}):
+            continue
+        state = 'deleted object' if edge['from_deleted'] else 'unresolved principal'
+        lines.append(f"{edge['from']} [{edge['from_id']}] ({state}) --{edge['edge']}--> "
+                     f"{edge['to']} [{edge['to_id']}] [source: {_proof(edge['evidence'])}]")
+    return lines
+
+
+def _conditional_route_lines(data: dict) -> list[str]:
+    lines = []
+    seen = set()
+    for row in data['conditional_reachers'] + data['conditional_da_reachers']:
+        if all(step['relationship'] in CONTROL_RIGHTS | {'MemberOf'}
+               and step['source_state'] == step['target_state'] == 'principal'
+               for step in row['steps']):
+            continue
+        key = (row['start']['id'], row['target']['id'],
+               tuple((step['relationship'], step['target']['id']) for step in row['steps']))
+        if key in seen:
+            continue
+        seen.add(key)
+        path = ' '.join(f"--{step['relationship']}--> {step['target']['name']}"
+                        for step in row['steps'])
+        lines.append(f"{row['start']['name']} [{row['start']['id']}] {path} "
+                     f"[target: {row['target']['id']}; verify each transition in JSON]")
+    return lines
+
+
+def _deleted_route_lines(data: dict) -> list[str]:
+    lines, seen = [], set()
+    for row in data['deleted_reachers'] + data['deleted_da_reachers']:
+        key = (row['deleted']['id'], row['target']['id'])
+        if key in seen:
+            continue
+        seen.add(key)
+        path = ' '.join(f"--{step['relationship']}--> {step['target']['name']}"
+                        for step in row['steps'])
+        carriers = ', '.join(item['principal']['name'] for item in row['sid_history_carriers'])
+        inbound = ', '.join(item['source']['name'] + ' --' + item['relationship'] + '-->'
+                            for item in row['incoming_control'])
+        context = (f"; SID history on: {carriers}" if carriers else '')
+        context += (f"; recorded inbound control: {inbound}" if inbound else '')
+        lines.append(f"{row['deleted']['name']} [{row['deleted']['id']}] (deleted) {path} "
+                     f"[{row['target_reason']}; {len(row['steps'])} edges; {row['first_step_kind']}]"
+                     f"{context}; "
+                     'edge sources in JSON')
+    return lines
+
+
+def _deleted_domain_grant_lines(data: dict) -> list[str]:
+    lines = []
+    for row in data['deleted_domain_grants']:
+        grants = ', '.join(grant['right'] for grant in row['grants'])
+        carriers = ', '.join(item['principal']['name'] for item in row['sid_history_carriers'])
+        reason = ', '.join(label for flag, label in (
+            (row['dcsync_combination'], 'replication grant combination'),
+            (row['domain_control'], 'domain object control')) if flag)
+        lines.append(f"{row['deleted']['name']} [{row['deleted']['id']}] (deleted) -> "
+                     f"{row['domain']['name']} [{row['domain']['id']}]: {reason}; "
+                     f"recorded ACEs: {grants}"
+                     + (f"; SID history on: {carriers}" if carriers else '')
+                     + '; ACE sources in JSON')
+    return lines
+
+
 def _report_sections(data: dict) -> list[tuple[str, list[str]]]:
     sections = []
     warnings = [item for item in data['analysis']['warnings']
@@ -392,23 +481,16 @@ def _report_sections(data: dict) -> list[tuple[str, list[str]]]:
     if warnings:
         sections.append(('Input notes', warnings))
 
-    text_fields = {'description', 'info', 'homedirectory', 'logonscript', 'profilepath',
-                   'userpassword', 'unixpassword', 'unicodepassword', 'sfupassword'}
-    account_clues = [{**row, 'properties': {key: value for key, value in row['properties'].items()
-                                          if key in text_fields}}
-                     for row in data['property_clues']
-                     if row['kind'] in {'user', 'computer'}
-                     or (row['kind'] == 'group' and (rid_of(row['id']) or 0) >= 1000)]
-    account_clues = [row for row in account_clues if row['properties']]
-    if account_clues:
-        sections.append(('Free-text identity clues', [
-            'Descriptions and account paths can identify owners or stored material; inspect the original object before using a value.',
-            *[property_clue(row) for row in account_clues],
+    credential_text = _credential_text_lines(data)
+    if credential_text:
+        sections.append(('Potential credential text', [
+            'Recorded text matched credential terms or populated password fields; confirm the value and context.',
+            *credential_text,
         ]))
     if data['account_findings']:
-        sections.append(('Account settings for review', [
+        sections.append(('Kerberos account leads', [
             f"{row['account']['name']} [{row['account']['id']}] "
-            f"(enabled={row['enabled']}): "
+            f"(enabled={row['enabled']}, admincount={row['admincount']}): "
             + '; '.join(f"{signal['explanation']}"
                         f" ({signal['field']}={json.dumps(signal['value'], ensure_ascii=False)})"
                         f" [source: {_proof(signal['evidence'])}]"
@@ -437,12 +519,14 @@ def _report_sections(data: dict) -> list[tuple[str, list[str]]]:
             'Grants are combined within each domain through recorded membership; verify effective access and deny ACEs.',
             *[dcsync_finding(row) for row in data['dcsync_findings']],
         ]))
-    if data['replication_aces']:
+    active_replication = [row for row in data['replication_aces']
+                          if row['principal_live'] and row['domain_live']]
+    if active_replication:
         sections.append(('Recorded replication ACEs', [
             f"{row['principal']['name']} [{row['principal']['id']}] --{row['right']}--> "
             f"{row['domain']['name']} [{row['domain']['id']}] "
             f"[source: {_proof(row['evidence'])}]"
-            for row in data['replication_aces']
+            for row in active_replication
         ]))
     if data['high_value_groups']:
         empty_groups = [row for row in data['high_value_groups'] if not row['members']]
@@ -457,6 +541,24 @@ def _report_sections(data: dict) -> list[tuple[str, list[str]]]:
         sections.append(('Object control for review', [
             'Recorded ACL edges from outside the investigation-target set; confirm effective rights and the operation on each object type.',
             *control_lines,
+        ]))
+    historical_lines = _unresolved_control_lines(data)
+    if historical_lines:
+        sections.append(('Historical or unresolved ACL principals', [
+            'These ACEs do not establish an active principal; check the SID and collection scope.',
+            *historical_lines,
+        ]))
+    deleted_routes = _deleted_route_lines(data)
+    if deleted_routes:
+        sections.append(('Deleted principals with recorded paths to important targets', [
+            'Historical chains only. An ACE may matter through SID history; old membership requires restored, effective membership. Verify current rights.',
+            *deleted_routes,
+        ]))
+    deleted_domain_grants = _deleted_domain_grant_lines(data)
+    if deleted_domain_grants:
+        sections.append(('Deleted principals with significant domain grants', [
+            'Direct ACEs remain recorded on a live domain object; verify any SID-history token and effective rights.',
+            *deleted_domain_grants,
         ]))
     for key, title in [('da_reachers', 'Principals reaching Domain Admins'),
                        ('reachers', 'Principals reaching high-value targets')]:
@@ -477,12 +579,12 @@ def _report_sections(data: dict) -> list[tuple[str, list[str]]]:
                 'Recorded ACL and membership path; verify effective rights and each operation.',
                 *path_lines,
             ]))
-    if data.get('from'):
-        if data.get('error'):
-            sections.append((f"Selected identity: {data['from']}", [data['error']]))
-        else:
-            sections.extend((f"From {data['from']}: {title}", rows)
-                            for title, rows in _from_sections(data))
+    conditional_lines = _conditional_route_lines(data)
+    if conditional_lines:
+        sections.append(('Conditional routes to high-value targets', [
+            'One minimum-transition candidate per starting principal; verify every prerequisite and source in JSON.',
+            *conditional_lines,
+        ]))
     sections.extend(_material_sections(data))
     return sections
 
@@ -513,5 +615,5 @@ def as_json(data: dict) -> str:
 RENDERERS = {"text": as_text, "md": as_md, "json": as_json}
 
 
-def render(g: Graph, start_name: str | None = None, fmt: str = "text") -> str:
-    return RENDERERS[fmt](build(g, start_name))
+def render(g: Graph, fmt: str = "text") -> str:
+    return RENDERERS[fmt](build(g))

@@ -26,10 +26,10 @@ def test_gpo_creator_goal_is_not_domain_admins(tmp_path, capsys):
     output = capsys.readouterr().out
     assert 'goal: da' in output and 'no recorded path' in output
     assert 'local-admin hop' not in output
-    data = report.build(g, 'dave')
-    assert data['path']['endpoint_reason'] == 'well-known-high-value-rid'
-    assert any(row['target']['id'] == creator for row in data['goal_paths'])
-    assert not any(row['target']['id'] == DA for row in data['goal_paths'])
+    data = report.build(g)
+    assert any(row['name'] == 'dave' and row['path'][-1]['name'] == 'GPO CREATORS@TEST.LOCAL'
+               for row in data['reachers'])
+    assert not any(row['name'] == 'dave' for row in data['da_reachers'])
     assert any(row['id'] == DA and row['domain_admins'] for row in data['targets'])
     assert 'path_to_da' not in data
     for render in (report.as_text, report.as_md):
@@ -42,7 +42,8 @@ def test_already_at_goal_has_zero_hop_path(tmp_path):
     g = load(tmp_path)
     assert queries.path_to_goal(g, ALICE)[0] == [(ALICE, None)]
     assert queries.path_to_da(g, DA)[0] == [(DA, None)]
-    assert report.build(g, 'alice')['path']['endpoint_reason'] == 'dcsync-on-domain'
+    assert report.build(g)['targets']
+    assert queries.goal_sids(g)[ALICE] == 'dcsync-on-domain'
     assert queries.path_to_da(g, ALICE)[0][-1][0] == DA
 
 
@@ -200,7 +201,7 @@ def test_property_clues_preserve_values_false_flags_and_full_record(tmp_path, ca
     assert 'Ask the demo helpdesk' in output and 'not verified credentials' in output
 
 
-def test_report_keeps_all_clues_in_every_format(tmp_path):
+def test_report_keeps_all_clues_in_json_without_dumping_routine_text(tmp_path):
     _write(tmp_path)
     replace_collection(tmp_path, 'users', [
         {'ObjectIdentifier': f'{DOM}-{1800+i}', 'Properties': {'name': f'USER-{i}', 'description': f'NOTE-{i}'}}
@@ -210,7 +211,8 @@ def test_report_keeps_all_clues_in_every_format(tmp_path):
     assert len(data['property_clues']) == 7
     for render in (report.as_text, report.as_md):
         output = render(data)
-        assert all(f'NOTE-{i}' in output for i in range(7))
+        assert all(f'NOTE-{i}' not in output for i in range(7))
+    assert all(f'NOTE-{i}' in report.as_json(data) for i in range(7))
 
 
 def test_rbcd_configuration_preserves_principals_without_creating_paths(tmp_path, capsys):

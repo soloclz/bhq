@@ -4,10 +4,10 @@ import zipfile
 
 import pytest
 
-from bhq import cli, report
+from bhq import cli, queries, report
 from bhq.loader import ADCS_TYPES, CollectionError, load
 from bhq.analysis import observations, policy, pki, routes, inventory
-from .test_bhq import _write, DOM, ALICE, BOB, DAVE, DA, WS01
+from .test_bhq import _write, DOM, ALICE, BOB, CAROL, DAVE, DA, WS01
 
 
 def read(path, kind):
@@ -367,14 +367,15 @@ def test_new_cli_commands_json_and_text(tmp_path, capsys, command):
     assert 'Recorded input' in capsys.readouterr().out
 
 
-def test_route_cli_and_report_keep_old_path_separate(tmp_path, capsys):
+def test_route_cli_and_global_report_show_conditional_leads(tmp_path, capsys):
     _write(tmp_path)
     no_alice_acl(tmp_path)
     mutate(tmp_path, 'computers', lambda c: c[0].update(Sessions=session()))
     assert cli.main(['route', str(tmp_path), 'alice', '--goal', 'da', '--format', 'json']) == 0
     assert json.loads(capsys.readouterr().out)['status'] == 'candidate'
-    data = report.build(load(tmp_path), 'alice')
-    assert data['path']['path'][0]['name'] == 'alice' and data['candidate_route']['steps'] is not None
+    data = report.build(load(tmp_path))
+    assert any(row['start']['id'] == ALICE and row['target']['id'] == DA
+               for row in data['conditional_da_reachers'])
     assert data['extended']['sessions']
     for render in (report.as_text, report.as_md):
         output = render(data)
@@ -385,12 +386,12 @@ def test_report_markdown_interprets_policy_and_adcs_without_dumping_records(tmp_
     _write(tmp_path)
     make_policy(tmp_path)
     make_pki(tmp_path)
-    data = report.build(load(tmp_path), 'bob')
+    data = report.build(load(tmp_path))
     md = report.as_md(data)
     assert 'GPO scope and projected changes' in md and 'POLICY' in md
     assert 'AD CS conditions' in md and 'ESC1' in md
     assert '"registry":' not in md and '"http_endpoints":' not in md
-    assert 'AD CS for selected identity' in md
+    assert 'AD CS for selected identity' not in md
     assert 't_enterprisecas.json' in md and 't_ous.json' in md
 
 
@@ -398,6 +399,68 @@ def test_deleted_objects_do_not_form_conditional_routes(tmp_path):
     _write(tmp_path)
     mutate(tmp_path, 'users', lambda u: u[1].update(IsDeleted=True))
     assert routes.route(load(tmp_path), ALICE, {DA})['steps'] is None
+
+
+def test_deleted_identity_is_evidence_but_not_a_reported_reacher(tmp_path):
+    _write(tmp_path)
+    mutate(tmp_path, 'users', lambda users: users[1].update(IsDeleted=True))
+    mutate(tmp_path, 'groups', lambda groups: groups[0].update(
+        Aces=[{'PrincipalSID': BOB, 'RightName': 'GenericAll'},
+              {'PrincipalSID': 'S-1-5-21-9-9-9-1001', 'RightName': 'GenericAll'}]))
+    g = load(tmp_path)
+    assert g.is_live(BOB) is False
+    assert BOB not in queries.who_can_reach_high_value(g, 'da')
+    assert queries.path_to_da(g, ALICE)[0] is None
+    data = report.build(g)
+    assert not any(row['name'] in {'alice', 'bob'} for row in data['da_reachers'])
+    assert any(row['from_id'] == BOB and row['from_deleted']
+               for row in data['recorded_edges'])
+    assert data['deleted_da_reachers'][0]['deleted']['id'] == BOB
+    assert data['deleted_da_reachers'][0]['target']['id'] == DA
+    assert any(item['source']['id'] == ALICE for item in data['deleted_da_reachers'][0]['incoming_control'])
+    md = report.as_md(data)
+    assert 'Historical or unresolved ACL principals' in md
+    assert 'Deleted principals with recorded paths to important targets' in md
+    assert 'bob' in md and '(deleted)' in md
+    assert 'S-1-5-21-9-9-9-1001' in md and '(unresolved principal)' in md
+
+
+def test_deleted_sid_history_can_explain_conditional_access_without_reviving_account(tmp_path):
+    _write(tmp_path)
+    mutate(tmp_path, 'users', lambda users: (
+        users[1].update(IsDeleted=True),
+        users[3].update(Aces=[{'PrincipalSID': BOB, 'RightName': 'GenericWrite'}]),
+        users[4].update(HasSIDHistory=[BOB])))
+    mutate(tmp_path, 'groups', lambda groups: groups[0].update(
+        Aces=[{'PrincipalSID': CAROL, 'RightName': 'GenericAll'}]))
+    g = load(tmp_path)
+    assert queries.path_to_da(g, BOB)[0] is None
+    route = routes.route(g, DAVE, {DA})
+    assert [step['relationship'] for step in route['steps']] == [
+        'HasSIDHistory', 'GenericWrite', 'GenericAll']
+    data = report.build(g)
+    row = next(row for row in data['deleted_da_reachers'] if row['deleted']['id'] == BOB)
+    assert [step['relationship'] for step in row['steps']] == ['GenericWrite', 'GenericAll']
+    assert row['sid_history_carriers'][0]['principal']['id'] == DAVE
+    assert 'SID history on: dave' in report.as_md(data)
+
+
+def test_deleted_principal_replication_grants_are_separate_historical_findings(tmp_path):
+    _write(tmp_path)
+    mutate(tmp_path, 'users', lambda users: users[1].update(IsDeleted=True))
+    mutate(tmp_path, 'domains', lambda domains: domains[0]['Aces'].extend([
+        {'PrincipalSID': BOB, 'RightName': 'GetChanges'},
+        {'PrincipalSID': BOB, 'RightName': 'GetChangesAll'},
+    ]))
+    g = load(tmp_path)
+    assert not any(row['principal_id'] == BOB for row in queries.dcsync_findings(g))
+    data = report.build(g)
+    row = next(row for row in data['deleted_domain_grants'] if row['deleted']['id'] == BOB)
+    assert row['dcsync_combination'] is True and row['domain']['id'] == DOM
+    assert {grant['right'] for grant in row['grants']} == {'GetChanges', 'GetChangesAll'}
+    assert all(not ace['principal_live'] for ace in data['replication_aces']
+               if ace['principal']['id'] == BOB)
+    assert 'Deleted principals with significant domain grants' in report.as_md(data)
 
 
 @pytest.mark.parametrize('field,value', [('Sessions', []), ('UserRights', ['bad']),
