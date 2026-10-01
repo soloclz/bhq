@@ -1,4 +1,4 @@
-# Recorded data and conditional analysis (bhq 0.4)
+# Recorded data and conditional analysis (bhq 0.4.1)
 
 bhq is an offline analyzer. These commands read a saved collection; they do not
 connect to hosts, authenticate, change AD objects, or execute the routes shown.
@@ -22,11 +22,16 @@ bhq route ./collection alice --to WS01.TEST.LOCAL --state host
 ```
 
 These commands accept `--format json` for structured records and source references.
-The report includes all recorded ACL and membership edges, selected property clues,
-roasting and delegation settings, DCSync grant combinations, and populated local
-access, session, GPO, AD CS, and raw-only field material. `--from` adds all
-reachable control and membership edges, all reachable conditional state
-transitions, and one minimum-hop explanation for each reached high-value target.
+The text and Markdown report select settings and relationships that merit review:
+account clues, Kerberos password signals, replication grants, control from outside
+the investigation-target set, reachable targets, delegation, trust, host access,
+GPO scope, and AD CS conditions when recorded. It does not repeat collection
+metadata, ordinary false account flags, every ACL edge, or raw field values.
+Use `clues`, `controls`, `coverage`, and `object` for focused inspection. The JSON
+report retains all recorded ACL and membership edges, property clues, account
+settings, and populated raw-only field material. `--from` analyzes all reachable
+control and membership edges and conditional state transitions, then shows one
+minimum-hop explanation for each reached high-value target in the readable report.
 The explanation minimizes the number of recorded edges; it does not rank
 reliability or effort, and other relationships remain in the edge list. Cycles
 terminate after each object or typed state has been visited. `report` has no

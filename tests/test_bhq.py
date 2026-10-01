@@ -341,11 +341,12 @@ def test_report_formats(tmp_path):
     # text mentions the kerberoastable account and the control edge
     txt = report.render(g, "alice", fmt="text")
     assert "alice" in txt and "ForceChangePassword" in txt
-    # Markdown contains the complete material, including relationship evidence.
+    # Markdown selects relationships that merit review; JSON retains the graph.
     md = report.render(g, "alice", fmt="md")
     assert md.startswith("# BloodHound")
-    assert "## Recorded ACL control and membership edges" in md
-    assert "ForceChangePassword" in md and "t_users.json" in md
+    assert "## Collection" not in md and "## Recorded account settings" not in md
+    assert "## Object control for review" in md
+    assert "GenericAll" in md and "t_groups.json" in md
     # json round-trips and carries the structured findings
     data = json.loads(report.render(g, "alice", fmt="json"))
     assert data["dcsync"] == ["SRVADMINS@TEST.LOCAL", "alice"]
@@ -379,6 +380,7 @@ def test_report_exhausts_control_graph_and_keeps_alternate_edges(tmp_path):
     data = report.build(load(tmp_path), "alice")
     da_path = next(row["path"] for row in data["goal_paths"] if row["target"]["id"] == DA)
     assert [step["id"] for step in da_path] == [ALICE, BOB, CAROL, DAVE, DA]
+    assert da_path[1]["evidence"][0]["source_file"] == "t_users.json"
     assert len(data["control_reachability"]) == len({row["id"] for row in data["control_reachability"]})
     assert any(row["from_id"] == DAVE and row["to_id"] == ALICE for row in data["controls"])
     alternatives = [row for row in data["controls"] if row["from_id"] == BOB and row["to_id"] == CAROL]
@@ -387,7 +389,40 @@ def test_report_exhausts_control_graph_and_keeps_alternate_edges(tmp_path):
     assert any(row["from_id"] == BOB and row["to_id"] == CAROL for row in data["recorded_edges"])
     assert any(row["value"] == "retained material" for row in data["raw_observations"])
     md = report.as_md(data)
-    assert "hop 4:" in md and "retained material" in md and "NewFeature.Finding" in md
+    assert "4 hops at the deepest edge" in md
+    assert "--ForceChangePassword [source: t_users.json" in md
+    assert "retained material" not in md and "NewFeature.Finding" not in md
+
+
+def test_report_does_not_dump_builtin_descriptions_or_normal_account_flags(tmp_path):
+    _write(tmp_path)
+    groups_file = tmp_path / "t_groups.json"
+    groups = json.loads(groups_file.read_text())
+    for index in range(40):
+        groups["data"].append({"ObjectIdentifier": f"{DOM}-{100 + index}",
+                               "Properties": {"name": f"BUILTIN-{index}",
+                                              "description": f"Generic group description {index}"},
+                               "Aces": [{"PrincipalSID": DA, "RightName": "GenericAll"}]})
+    groups["data"].append({"ObjectIdentifier": f"{DOM}-1700",
+                           "Properties": {"name": "APP-OPS", "description": "Review application role"},
+                           "Aces": []})
+    groups_file.write_text(json.dumps(groups))
+    users_file = tmp_path / "t_users.json"
+    users = json.loads(users_file.read_text())
+    users["data"][0]["Properties"].update(dontreqpreauth=False, trustedtoauth=False,
+                                             passwordnotreqd=False, lastlogon=0)
+    users_file.write_text(json.dumps(users))
+    data = report.build(load(tmp_path))
+    md = report.as_md(data)
+    assert len([row for row in data["property_clues"] if "description" in row["properties"]]) == 41
+    assert "Generic group description" not in md
+    assert "Review application role" in md
+    assert "dontreqpreauth=false" not in md and "lastlogon=0" not in md
+    assert not any(signal['field'] == 'dontreqpreauth' for row in data['account_findings']
+                   if row['account']['id'] == ALICE for signal in row['signals'])
+    assert "Recorded ACL control and membership edges" not in md
+    assert "## Collection" not in md
+    assert len(md) < 15_000
 
 
 def test_report_rejects_removed_goal_option(tmp_path, capsys):

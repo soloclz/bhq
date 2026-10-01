@@ -381,16 +381,16 @@ def test_route_cli_and_report_keep_old_path_separate(tmp_path, capsys):
         assert 'Conditional route' in output and 'HasSession' in output
 
 
-def test_report_markdown_keeps_structured_policy_and_adcs_material(tmp_path):
+def test_report_markdown_interprets_policy_and_adcs_without_dumping_records(tmp_path):
     _write(tmp_path)
     make_policy(tmp_path)
     make_pki(tmp_path)
     data = report.build(load(tmp_path), 'bob')
     md = report.as_md(data)
-    assert 'Recorded GPO and policy material' in md and '"requires":' in md
-    assert 'Recorded AD CS material' in md and '"registry":' in md
-    assert '"http_endpoints":' in md and '"settings":' in md
-    assert 'AD CS for selected identity' in md and '"enrollment":' in md
+    assert 'GPO scope and projected changes' in md and 'POLICY' in md
+    assert 'AD CS conditions' in md and 'ESC1' in md
+    assert '"registry":' not in md and '"http_endpoints":' not in md
+    assert 'AD CS for selected identity' in md
     assert 't_enterprisecas.json' in md and 't_ous.json' in md
 
 

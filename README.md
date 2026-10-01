@@ -86,7 +86,7 @@ All fixtures in `tests/` are synthetic; no engagement collection is included.
 
 The loader uses filenames and object fields to select data. When `meta` is
 present, its type and count must agree with the file; declared collector, schema,
-and methods are retained in JSON reports and summarized in text/Markdown.
+and methods are retained in JSON reports and shown by `coverage`.
 Unverified schema versions produce a warning. This is not complete schema
 validation or proof of collection completeness. Users, groups, computers, domains, GPOs, OUs, containers and six AD CS object
 types are loaded; other JSON filenames are reported as not analyzed. Empty or missing metadata does not identify the collector.
@@ -159,8 +159,9 @@ an ObjectIdentifier; principal-only commands retain their existing name lookup.
 attributes, plus selected flags (passwordnotreqd, trustedtoauth, admincount,
 haslaps, and enabled=false). It does not verify credentials or infer that a flag
 proves exploitability. Fields not selected remain available through `object`.
-Text, Markdown, and JSON reports retain all selected clue objects and their
-source files.
+`clues` and JSON reports retain all selected clue objects and their source
+files. Text and Markdown reports surface account clues and descriptions on
+non-builtin groups for review.
 
 ## Contributing
 
@@ -176,15 +177,17 @@ from negative findings when adding support for a collector or relationship.
 
 MIT. See [LICENSE](LICENSE).
 
-## Output changes in 0.4
+## Report output in 0.4.1
 
-`report` no longer accepts `--goal`. It includes all loaded investigation targets,
+Since 0.4.0, `report` no longer accepts `--goal`. It includes all loaded investigation targets,
 recorded ACL and membership edges, populated property clues, and the recorded
-access, session, GPO, AD CS, and raw-only field material with source locations.
+access, session, GPO, AD CS, and raw-only field material in JSON.
 `--from` traverses the loaded control and membership graph until no new object is
 reachable. It retains every reachable relationship and gives one minimum-hop
-explanation per reached target. Conditional transitions are reported separately
-with their requirements. The JSON keys `recorded_edges`, `raw_observations`, and,
+explanation per reached target. Text and Markdown present review findings and
+the reached target paths; they omit collection metadata, routine account flags,
+and full edge and raw-field dumps. The JSON keys `account_findings`,
+`recorded_edges`, `raw_observations`, and,
 with `--from`, `control_reachability`, `controls`, `goal_paths`, and
 `candidate_reachability` expose these materials. See [analysis](docs/analysis.md).
 

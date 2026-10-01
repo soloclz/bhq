@@ -103,7 +103,7 @@ def test_rusthound_envelope_and_existing_queries(tmp_path, zipped):
         assert meta["methods"] == 0
     for renderer in (report.as_text, report.as_md):
         text = renderer(data)
-        assert COLLECTOR in text and "schema=6" in text
+        assert "schema=6" not in text and "Collection" not in text
     assert "metadata" in json.loads(report.as_json(data))["collection"]
 
 
