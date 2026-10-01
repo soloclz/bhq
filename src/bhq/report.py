@@ -444,33 +444,36 @@ def _deleted_route_lines(data: dict) -> list[str]:
         if key in seen:
             continue
         seen.add(key)
-        path = ' '.join(f"--{step['relationship']}--> {step['target']['name']}"
+        path = ' '.join(f"--{step['relationship']} [source: {_proof(step['evidence'])}]--> "
+                        f"{step['target']['name']}"
                         for step in row['steps'])
-        carriers = ', '.join(item['principal']['name'] for item in row['sid_history_carriers'])
-        inbound = ', '.join(item['source']['name'] + ' --' + item['relationship'] + '-->'
+        carriers = ', '.join(item['principal']['name'] + f" [source: {_proof(item['evidence'])}]"
+                             for item in row['sid_history_carriers'])
+        inbound = ', '.join(item['source']['name'] + ' --' + item['relationship']
+                            + f" [source: {_proof(item['evidence'])}]-->"
                             for item in row['incoming_control'])
         context = (f"; SID history on: {carriers}" if carriers else '')
         context += (f"; recorded inbound control: {inbound}" if inbound else '')
         lines.append(f"{row['deleted']['name']} [{row['deleted']['id']}] (deleted) {path} "
                      f"[{row['target_reason']}; {len(row['steps'])} edges; {row['first_step_kind']}]"
-                     f"{context}; "
-                     'edge sources in JSON')
+                     f"{context}")
     return lines
 
 
 def _deleted_domain_grant_lines(data: dict) -> list[str]:
     lines = []
     for row in data['deleted_domain_grants']:
-        grants = ', '.join(grant['right'] for grant in row['grants'])
-        carriers = ', '.join(item['principal']['name'] for item in row['sid_history_carriers'])
+        grants = ', '.join(grant['right'] + f" [source: {_proof(grant['evidence'])}]"
+                           for grant in row['grants'])
+        carriers = ', '.join(item['principal']['name'] + f" [source: {_proof(item['evidence'])}]"
+                             for item in row['sid_history_carriers'])
         reason = ', '.join(label for flag, label in (
             (row['dcsync_combination'], 'replication grant combination'),
             (row['domain_control'], 'domain object control')) if flag)
         lines.append(f"{row['deleted']['name']} [{row['deleted']['id']}] (deleted) -> "
                      f"{row['domain']['name']} [{row['domain']['id']}]: {reason}; "
                      f"recorded ACEs: {grants}"
-                     + (f"; SID history on: {carriers}" if carriers else '')
-                     + '; ACE sources in JSON')
+                     + (f"; SID history on: {carriers}" if carriers else ''))
     return lines
 
 
