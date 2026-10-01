@@ -16,7 +16,7 @@ DOMAIN_SID = "S-1-5-21-10-20-30"
 USER = DOMAIN_SID + "-1101"
 
 
-def pair(rid=548, name="ACCOUNT OPERATORS"):
+def pair(rid=548, name="ACCOUNT OPERATORS", version="2.5.12"):
     default = {
         "ObjectIdentifier": f"EXAMPLE.TEST-S-1-5-32-{rid}",
         "IsDeleted": False, "IsACLProtected": False, "ContainedBy": None,
@@ -28,6 +28,13 @@ def pair(rid=548, name="ACCOUNT OPERATORS"):
                        "whencreated": 0, "admincount": False,
                        "isaclprotected": False, "highvalue": rid in (544, 548, 550)},
     }
+    if version == "2.5.20":
+        default["HasSIDHistory"] = []
+        default["Properties"].update({
+            "objectguid": "", "doesanyacegrantownerrights": False,
+            "doesanyinheritedacegrantownerrights": False,
+            "adminsdholderprotected": False, "groupscope": "", "sidhistory": [],
+        })
     actual = deepcopy(default)
     actual["Properties"].update({"domain": "EXAMPLE.TEST",
         "distinguishedname": f"CN={name},CN=BUILTIN,DC=EXAMPLE,DC=TEST",
@@ -37,6 +44,9 @@ def pair(rid=548, name="ACCOUNT OPERATORS"):
     actual["Members"] = [{"ObjectIdentifier": USER, "ObjectType": "User"}]
     actual["Aces"] = [{"PrincipalSID": USER, "PrincipalType": "User",
                        "RightName": "WriteDacl", "IsInherited": False}]
+    if version == "2.5.20":
+        actual["Properties"].update({"objectguid": "SYNTHETIC-GUID",
+            "adminsdholderprotected": True, "groupscope": "DomainLocal"})
     return actual, default
 
 
@@ -50,11 +60,11 @@ def write(tmp_path, rows, version="2.5.12", meta_changes=None, name="sample_grou
 
 
 @pytest.mark.parametrize("rid,name", NAMES)
-@pytest.mark.parametrize("version", ["2.5.12", "2.5.13"])
+@pytest.mark.parametrize("version", ["2.5.12", "2.5.13", "2.5.20"])
 @pytest.mark.parametrize("reverse", [False, True])
 @pytest.mark.parametrize("zipped", [False, True])
 def test_preserve_real_record_and_report_normalization(tmp_path, rid, name, version, reverse, zipped):
-    actual, default = pair(rid, name)
+    actual, default = pair(rid, name, version)
     rows = [default, actual] if reverse else [actual, default]
     file = write(tmp_path, rows, version)
     original = file.read_bytes()
@@ -111,8 +121,21 @@ def test_refuse_ambiguous_or_nonempty_duplicates(tmp_path, change):
         load(tmp_path)
 
 
+@pytest.mark.parametrize("change", ["history", "guid", "owner_rights", "scope", "protected"])
+def test_refuse_nondefault_new_fields(tmp_path, change):
+    actual, default = pair(version="2.5.20")
+    if change == "history": default["HasSIDHistory"] = [USER]
+    elif change == "guid": default["Properties"]["objectguid"] = "recorded-guid"
+    elif change == "owner_rights": default["Properties"]["doesanyacegrantownerrights"] = True
+    elif change == "scope": default["Properties"]["groupscope"] = "DomainLocal"
+    elif change == "protected": default["Properties"]["adminsdholderprotected"] = True
+    write(tmp_path, [actual, default], version="2.5.20")
+    with pytest.raises(CollectionError, match="conflicting records within one file"):
+        load(tmp_path)
+
+
 @pytest.mark.parametrize("meta", [{"collectorversion": "SharpHound"},
-    {"collectorversion": "RustHound-CE v2.5.14"}, {"version": 5}, {"count": 1}])
+    {"collectorversion": "RustHound-CE v2.5.19"}, {"version": 5}, {"count": 1}])
 def test_require_verified_envelope(tmp_path, meta):
     write(tmp_path, list(pair()), meta_changes=meta)
     with pytest.raises(CollectionError):

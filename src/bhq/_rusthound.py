@@ -7,7 +7,9 @@ from collections import defaultdict
 import json
 import re
 
-VERSIONS = {"RustHound-CE v2.5.12", "RustHound-CE v2.5.13"}
+LEGACY_VERSIONS = {"RustHound-CE v2.5.12", "RustHound-CE v2.5.13"}
+V2_5_20 = "RustHound-CE v2.5.20"
+VERSIONS = LEGACY_VERSIONS | {V2_5_20}
 BUILTINS = {
     "544": "ADMINISTRATORS", "548": "ACCOUNT OPERATORS",
     "550": "PRINT OPERATORS", "554": "PRE-WINDOWS 2000 COMPATIBLE ACCESS",
@@ -16,7 +18,7 @@ BUILTINS = {
 }
 
 
-def _placeholder_for(actual, candidate):
+def _placeholder_for(actual, candidate, collector_version):
     sid = actual["ObjectIdentifier"]
     match = re.fullmatch(r"([A-Z0-9.-]+)-S-1-5-32-(544|548|550|554|557|560|561)", sid)
     if not match or actual.get("IsDeleted") is not False:
@@ -52,6 +54,13 @@ def _placeholder_for(actual, candidate):
             "admincount": False,
         },
     }
+    if collector_version == V2_5_20:
+        expected["HasSIDHistory"] = []
+        expected["Properties"].update({
+            "objectguid": "", "doesanyacegrantownerrights": False,
+            "doesanyinheritedacegrantownerrights": False,
+            "adminsdholderprotected": False, "groupscope": "", "sidhistory": [],
+        })
     # JSON comparison also distinguishes false from 0; extra fields must not vanish.
     return json.dumps(candidate, sort_keys=True) == json.dumps(expected, sort_keys=True)
 
@@ -68,7 +77,7 @@ def normalize_groups(data, meta, source):
             continue
         left, right = indices
         for actual, placeholder in ((left, right), (right, left)):
-            if _placeholder_for(data[actual], data[placeholder]):
+            if _placeholder_for(data[actual], data[placeholder], meta["collectorversion"]):
                 dropped.add(placeholder)
                 notices.append({"source": source, "object_identifier": sid,
                                 "kept_index": actual, "placeholder_index": placeholder})

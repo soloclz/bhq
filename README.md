@@ -81,6 +81,7 @@ All fixtures in `tests/` are synthetic; no engagement collection is included.
 | CE `LocalGroups` layout | Synthetic fixtures exercise all four local-access mappings and failure reporting |
 | SharpHound / bloodhound-python / bloodhound-ce-python | Intended input families; no version-pinned end-to-end compatibility matrix yet |
 | RustHound-CE v2.5.12 | Source reviewed at a pinned commit; reduced synthetic fixtures exercise metadata, core queries, delegation targets, and unsupported-data warnings. Live collection remains unverified. See [details](docs/rusthound-ce.md). |
+| RustHound-CE v2.5.20 | Source review of the builtin group collision rule; synthetic cases and a private Kali dump confirm `coverage` and Markdown `report` load all seven duplicate builtin pairs. Other collection fields are not covered by a version-pinned end-to-end matrix. See [details](docs/rusthound-ce.md). |
 
 The loader uses filenames and object fields to select data. When `meta` is
 present, its type and count must agree with the file; declared collector, schema,

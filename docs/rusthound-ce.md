@@ -1,9 +1,11 @@
-# RustHound-CE v2.5.12 compatibility
+# RustHound-CE compatibility
 
-Status: source review, reduced synthetic fixtures, and an authorized private lab
-dump regression on Kali (2026-09-14). No live collection was initiated by this
-test, and no upstream serializer execution or BloodHound CE ingestion comparison
-was performed. The private JSON files are not stored in this repository.
+Status: v2.5.12 source review, reduced synthetic fixtures, and an authorized
+private lab dump regression on Kali (2026-09-14). The builtin group collision
+rule was also checked against v2.5.20 source, synthetic fixtures, and a private
+lab dump on Kali (2026-10-01). No live collection was initiated by these tests,
+and no upstream serializer execution or BloodHound CE ingestion comparison was
+performed. The private JSON files are not stored in this repository.
 
 Upstream tag: `v2.5.12`.
 Commit: `aeb28db95f0149a1579c2517536083e150ae2803`.
@@ -13,16 +15,25 @@ not complete collector documents or a copied engagement collection.
 
 ## Builtin group placeholder collisions
 
-RustHound-CE 2.5.12 and 2.5.13 append default builtin groups even when LDAP has
-already supplied the same ObjectIdentifier. The reviewed `group.rs`, `sid.rs`,
-checker entry point and `checker/common.rs` are byte-identical between these tags.
+RustHound-CE 2.5.12, 2.5.13 and 2.5.20 append default builtin groups even when
+LDAP has already supplied the same ObjectIdentifier. The reviewed `group.rs`, `sid.rs`,
+checker entry point and `checker/common.rs` are byte-identical between v2.5.12
+and v2.5.13.
 See the [2.5.13 checker](https://github.com/g0h4n/RustHound-CE/blob/v2.5.13/src/json/checker/common.rs)
 and [group defaults](https://github.com/g0h4n/RustHound-CE/blob/v2.5.13/src/objects/group.rs).
 This is not evidence of mixed collection snapshots by itself.
 
+The v2.5.20 release was checked on 2026-10-01 at commit
+`5a10b1e6264d37428175d46972201c7193a9f9eb`. Its
+[checker](https://github.com/g0h4n/RustHound-CE/blob/v2.5.20/src/json/checker/common.rs)
+still appends the same builtin groups; its
+[group structure](https://github.com/g0h4n/RustHound-CE/blob/v2.5.20/src/objects/group.rs)
+serializes `HasSIDHistory` and six more `Properties` fields. bhq matches the
+source-defined empty values for that version and retains the LDAP record.
+
 bhq recognizes exactly one actual record plus one source-matching empty default
 for builtin RIDs 544, 548, 550, 554, 557, 560 and 561 within the same groups file.
-It requires schema 6 and one of the two reviewed collectorversion strings. These
+It requires schema 6 and one of the three reviewed collectorversion strings. These
 labels identify a compatibility rule, not proof of collector authenticity.
 The actual record must identify a live builtin group in the matching domain;
 the default must match the complete known shape, with no ACEs, members or extra
@@ -45,6 +56,10 @@ builtin IDs. The corrected loader retained every actual group unchanged and
 passed the full report CLI; all 13 original JSON checksums were unchanged.
 The dump was not recollected with 2.5.13: that version's claim is source and
 synthetic-test compatibility for this specific behavior, not a new live lab run.
+On the private v2.5.20 dump, seven builtin pairs were normalized; the `coverage`
+and Markdown `report` commands completed, and the original JSON checksums were
+unchanged. This validates the collision rule and those commands on that dump,
+not all v2.5.20 collection fields or analysis paths.
 
 ## Output contract and handling
 
