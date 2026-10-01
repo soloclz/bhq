@@ -395,6 +395,12 @@ def test_report_markdown_interprets_policy_and_adcs_without_dumping_records(tmp_
     assert 'AD CS for selected identity' not in md
     assert 't_enterprisecas.json' in md
 
+    missing_sid = f'{DOM}-1111'
+    mutate(tmp_path, 'certtemplates', lambda t: t[0]['Aces'].append(
+        {'PrincipalSID': missing_sid, 'RightName': 'Enroll'}))
+    md = report.render(load(tmp_path), fmt='md')
+    assert f'Unresolved Enroll trustee {missing_sid} on LOGIN@TEST.LOCAL' in md
+
     mutate(tmp_path, 'domains', lambda d: d[0].update(
         GPOChanges={'LocalAdmins': [member(DAVE)], 'AffectedComputers': [member(WS01)]}))
     md = report.render(load(tmp_path), fmt='md')

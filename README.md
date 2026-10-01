@@ -176,7 +176,7 @@ from negative findings when adding support for a collector or relationship.
 
 MIT. See [LICENSE](LICENSE).
 
-## Report output in 0.5.1
+## Report output in 0.5.2
 
 `report` analyzes the collection globally; it no longer accepts `--from` or
 `--goal`. It finds every principal with a recorded ACL/membership path to the
@@ -188,8 +188,15 @@ Kerberos account leads, and notable ACEs whose principal is deleted or missing
 from the collection. They omit low-signal listings: empty session results,
 link-only GPO scope expansions, empty privileged-group member lists, duplicate
 replication ACEs, and paths that start from already privileged built-in
-principals. These omissions do not establish that an ACL or GPO has its default
-configuration; the collection has no baseline comparison or GPO content.
+principals. Direct membership in a privileged group is shown separately from
+paths into that group. `Object control` draws selected recorded ACL relationships
+as a tree, connects membership where it explains a later ACL edge, and places
+interpretation and source locations below the tree. A `ReadLAPSPassword` edge
+remains visible there but is not treated as acquiring the computer-account
+identity for path traversal. An unresolved `Enroll` trustee on an AD CS template
+candidate is called out by SID for follow-up. These omissions do not establish
+that an ACL or GPO has its default configuration; the collection has no baseline
+comparison or GPO content.
 JSON retains `recorded_edges`, `property_clues`, `account_settings`,
 `raw_observations`, `conditional_reachers`, `conditional_da_reachers`,
 `deleted_reachers`, `deleted_da_reachers`, and `deleted_domain_grants`, with

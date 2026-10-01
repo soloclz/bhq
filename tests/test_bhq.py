@@ -345,8 +345,11 @@ def test_report_formats(tmp_path):
     md = report.render(g, fmt="md")
     assert md.startswith("# BloodHound")
     assert "## Collection" not in md and "## Recorded account settings" not in md
-    assert "## Object control for review" in md
+    assert "## Object control" in md and '```text' in md
     assert "GenericAll" in md and "t_groups.json" in md
+    assert "## Privileged memberships" in md
+    assert "bob --MemberOf--&gt; DOMAIN ADMINS@TEST.LOCAL" in md
+    assert "bob (1 hops)" not in md
     # json round-trips and carries the structured findings
     data = json.loads(report.render(g, fmt="json"))
     assert data["dcsync"] == ["SRVADMINS@TEST.LOCAL", "alice"]
@@ -391,8 +394,8 @@ def test_report_keeps_anomalous_leads_without_routine_directory_baseline(tmp_pat
     computers = json.loads(computer_file.read_text())
     computers['data'][0]['Sessions'] = {'Collected': True, 'Results': []}
     computers['data'].append({'ObjectIdentifier': f'{DOM}-1000', 'Properties': {
-        'name': 'DC01.TEST.LOCAL', 'samaccountname': 'DC01$', 'isdc': True,
-        'unconstraineddelegation': True}, 'Aces': []})
+        'name': 'DC01.TEST.LOCAL', 'samaccountname': 'DC01$',
+        'unconstraineddelegation': True}, 'PrimaryGroupSID': f'{DOM}-516', 'Aces': []})
     computer_file.write_text(json.dumps(computers))
 
     data = report.build(load(tmp_path))
@@ -414,6 +417,44 @@ def test_report_keeps_anomalous_leads_without_routine_directory_baseline(tmp_pat
     computer_file.write_text(json.dumps(computers))
     md = report.render(load(tmp_path), fmt='md')
     assert 'Recorded sessions' in md and 'bob' in md
+
+
+def test_report_tree_keeps_multistep_object_relationships(tmp_path):
+    _write(tmp_path)
+    users_file = tmp_path / 't_users.json'
+    users = json.loads(users_file.read_text())
+    users['data'][3]['Aces'] = [{'PrincipalSID': BOB, 'RightName': 'GenericWrite'}]
+    users_file.write_text(json.dumps(users))
+    md = report.render(load(tmp_path), fmt='md')
+    assert 'alice\n└── ForceChangePassword → bob [1]\n    └── GenericWrite → carol [2]' in md
+    assert '[1] bob [user]: Source: t_users.json' in md
+    assert '[2] carol [user]: Source: t_users.json' in md
+
+
+def test_laps_read_does_not_become_computer_identity(tmp_path):
+    _write(tmp_path)
+    eve = f'{DOM}-1005'
+    users_file = tmp_path / 't_users.json'
+    users = json.loads(users_file.read_text())
+    users['data'].append({'ObjectIdentifier': eve, 'Properties': {'samaccountname': 'eve'}, 'Aces': []})
+    users_file.write_text(json.dumps(users))
+    computer_file = tmp_path / 't_computers.json'
+    computers = json.loads(computer_file.read_text())
+    computers['data'][0]['Aces'] = [{'PrincipalSID': eve, 'RightName': 'ReadLAPSPassword'}]
+    computer_file.write_text(json.dumps(computers))
+    domain_file = tmp_path / 't_domains.json'
+    domains = json.loads(domain_file.read_text())
+    domains['data'][0]['Aces'] += [
+        {'PrincipalSID': WS01, 'RightName': 'GetChanges'},
+        {'PrincipalSID': WS01, 'RightName': 'GetChangesAll'}]
+    domain_file.write_text(json.dumps(domains))
+
+    g = load(tmp_path)
+    assert any(right == 'ReadLAPSPassword' for _, _, right, _ in queries.control_rows(g, eve))
+    assert eve not in queries.who_can_reach_high_value(g)
+    assert queries.path_to_goal(g, eve)[0] is None
+    assert 'ReadLAPSPassword → WS01.TEST.LOCAL' in report.render(g, fmt='md')
+    assert 'not its computer-account password' in report.render(g, fmt='md')
 
 
 def test_report_exhausts_control_graph_and_keeps_alternate_edges(tmp_path):

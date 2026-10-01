@@ -10,9 +10,10 @@ from __future__ import annotations
 import json
 import re
 from collections import defaultdict, deque
+from dataclasses import dataclass
 
 from . import queries
-from .loader import CONTROL_RIGHTS, DCSYNC_RIGHTS, Graph, rid_of
+from .loader import CONTROL_RIGHTS, DCSYNC_RIGHTS, WELL_KNOWN_HIGH_VALUE_RIDS, Graph, rid_of
 from .analysis import observations, policy, pki, routes, inventory, presentation
 from .analysis.common import evidence, ref
 
@@ -171,7 +172,8 @@ def _deleted_principal_paths(g: Graph, goals: dict[str, str]) -> list[dict]:
     queue = deque(sorted(next_edge))
     while queue:
         target = queue.popleft()
-        inbound = list(g.control_edges_rev.get(target, []))
+        inbound = [(sid, right) for sid, right in g.control_edges_rev.get(target, [])
+                   if right not in queries.NON_PRINCIPAL_PATH_RIGHTS]
         inbound += [(sid, 'MemberOf') for sid in g.member_edges_rev.get(target, [])]
         for source, relationship in inbound:
             if g.is_live(source) and source not in next_edge:
@@ -186,7 +188,8 @@ def _deleted_principal_paths(g: Graph, goals: dict[str, str]) -> list[dict]:
     for sid, obj in g.by_sid.items():
         if obj.get('IsDeleted') is not True or g.kind(sid) not in {'user', 'group', 'computer'}:
             continue
-        outgoing = list(g.control_edges.get(sid, []))
+        outgoing = [(target, right) for target, right in g.control_edges.get(sid, [])
+                    if right not in queries.NON_PRINCIPAL_PATH_RIGHTS]
         outgoing += [(target, 'MemberOf') for target in g.member_edges.get(sid, [])]
         # An ACE addressed to the historical SID may apply through SID history.
         # A deleted account's old MemberOf edge is not inherited that way.
@@ -235,7 +238,9 @@ def build(g: Graph) -> dict:
         "delegation": queries.delegation(g),
         "domain_controllers": [
             {'id': obj['ObjectIdentifier'], 'name': (obj.get('Properties') or {}).get('samaccountname')}
-            for obj in g.computers if (obj.get('Properties') or {}).get('isdc') is True
+            for obj in g.computers
+            if (obj.get('Properties') or {}).get('isdc') is True
+            or rid_of(str(obj.get('PrimaryGroupSID') or '')) == 516
         ],
         "trusts": queries.trusts(g),
         "dcsync": queries.dcsync_principals(g),
@@ -305,16 +310,39 @@ def _material_sections(data: dict) -> list[tuple[str, list[str]]]:
 
     pol = ext['policy']
     changes = [row for row in pol['changes'] if any(row['groups'].values())]
-    if changes or pol['issues']:
-        relevant = {**pol, 'links': [], 'effects': [], 'changes': changes}
+    issues = [row for row in pol['issues']
+              if not (row['reason'] == 'conflicting-parents'
+                      and re.search(r'(?:^|-)S-1-5-(?:4|9|11|17)$',
+                                    str(row['object']['id']), re.I))]
+    if changes or issues:
+        relevant = {**pol, 'links': [], 'effects': [], 'changes': changes, 'issues': issues}
         entries = presentation.lines('policy', relevant)[1:]
         if not changes:
             entries = [line for line in entries if not line.startswith('Candidate scope excludes')]
         sections.append(('GPO projected changes and issues', entries))
 
     adcs = ext['adcs']
-    if any(adcs[key] for key in ('objects', 'cas', 'templates', 'publications', 'issuance_policies')):
-        sections.append(('AD CS conditions', presentation.lines('adcs', adcs, True)[1:]))
+    candidates = [row for row in adcs['esc_summary']
+                  if row['state'] in {'candidate', 'configuration-candidate'} and row['candidates']]
+    if candidates:
+        entries = ['Recorded configuration candidates; enrollment, issuance and authentication still need validation.']
+        for ca in adcs['cas']:
+            entries.append(f"CA {ca['ca']['name']} on {ca['hosting_computer']['name']} "
+                           f"[source: {_proof(ca['evidence'])}]")
+        for row in candidates:
+            names = ', '.join(dict.fromkeys(item['name'] for item in row['candidates']))
+            entries.append(f"{row['esc']} ({row['state']}): {names}; check: {row['verify']}")
+        candidate_ids = {item['id'] for row in candidates for item in row['candidates']}
+        for template in adcs['templates']:
+            if template['template']['id'] not in candidate_ids:
+                continue
+            for grant in template['grants']:
+                if grant['right'] == 'Enroll' and not grant['principal']['resolved']:
+                    entries.append(
+                        f"Unresolved Enroll trustee {grant['principal']['id']} on "
+                        f"{template['template']['name']}; resolve this SID, including deleted objects "
+                        f"if accessible [source: {_proof(grant['evidence'])}]")
+        sections.append(('AD CS conditions', entries))
 
     coverage = ext['coverage']
     if coverage['unmodeled_ace_rights']:
@@ -386,28 +414,148 @@ def delegation_targets(row: dict) -> str:
     return "; ".join(parts)
 
 
-def _reviewable_control_lines(data: dict) -> list[str]:
-    """Show control from outside the target set across a notable object boundary."""
-    targets = {row['id']: row['reason'] for row in data['targets']}
+@dataclass
+class ControlTree:
+    graph: list[str]
+    notes: list[str]
+
+
+def _control_tree(data: dict) -> ControlTree:
+    """Display recorded ACL relationships once, then connect relevant membership."""
+    dc_ids = {row['id'] for row in data['domain_controllers']}
+    all_acl = [edge for edge in data['recorded_edges']
+               if edge['edge'] != 'MemberOf' and edge['from_resolved'] and edge['to_resolved']
+               and not edge['from_deleted'] and not edge['to_deleted']
+               and edge['from_kind'] in {'user', 'group', 'computer'}
+               and edge['from_id'] not in dc_ids
+               and rid_of(edge['from_id']) not in WELL_KNOWN_HIGH_VALUE_RIDS]
+    acl = [edge for edge in all_acl
+           if rid_of(edge['from_id']) is None or rid_of(edge['from_id']) >= 1000]
+    core_sources = {edge['from_id'] for edge in acl}
+    core_targets = {edge['to_id'] for edge in acl}
+    linked_roles = {edge['to_id'] for edge in data['recorded_edges']
+                    if edge['edge'] == 'MemberOf' and edge['from_resolved']
+                    and not edge['from_deleted'] and edge['from_id'] not in dc_ids
+                    and (edge['from_id'] in core_targets
+                         or (edge['from_kind'] == 'user'
+                             and (rid_of(edge['from_id']) or 0) >= 1000))}
+    acl.extend(edge for edge in all_acl if edge['from_id'] in linked_roles and edge not in acl)
+    sources = {edge['from_id'] for edge in acl}
+    targets = {edge['to_id'] for edge in acl}
+    membership = [edge for edge in data['recorded_edges']
+                  if edge['edge'] == 'MemberOf' and edge['from_id'] in targets
+                  and edge['to_id'] in sources and edge['from_resolved'] and edge['to_resolved']
+                  and not edge['from_deleted'] and not edge['to_deleted']]
+    selected = acl + membership
+    if not acl:
+        return ControlTree([], [])
+
+    names = {}
+    ids_by_name = defaultdict(set)
+    for edge in selected:
+        for side in ('from', 'to'):
+            sid = edge[f'{side}_id']
+            names[sid] = (edge[side], edge[f'{side}_kind'])
+            ids_by_name[edge[side]].add(sid)
+
+    def label(sid: str) -> str:
+        name, kind = names[sid]
+        safe_name = name.replace('`', "'").replace('\r', ' ').replace('\n', ' ')
+        return f'{safe_name} [{kind}: {sid}]' if len(ids_by_name[name]) > 1 else safe_name
+
     grouped = defaultdict(list)
-    for edge in data['recorded_edges']:
-        if (edge['edge'] == 'MemberOf' or edge['from_id'] in targets
-                or not edge['from_resolved'] or not edge['to_resolved']
-                or edge['from_deleted'] or edge['to_deleted']):
+    adjacency = defaultdict(list)
+    for edge in selected:
+        grouped[(edge['from_id'], edge['to_id'])].append(edge)
+    for source, target in grouped:
+        adjacency[source].append(target)
+    for source in adjacency:
+        adjacency[source].sort(key=lambda sid: (label(sid).casefold(), sid))
+    incoming_acl = {target for (source, target), edges in grouped.items()
+                    if any(edge['edge'] != 'MemberOf' for edge in edges)}
+    roots = sorted((source for source in adjacency if source not in incoming_acl),
+                   key=lambda sid: (sid not in core_sources, label(sid).casefold(), sid))
+
+    note_by_pair = {}
+    explanations = {
+        'ReadGMSAPassword': 'Check effective managed-password retrieval and the account service role.',
+        'ReadLAPSPassword': 'The ACE concerns a LAPS password on this computer object, not its computer-account password. Identify the managed account and verify a readable current value.',
+        'WriteSPN': 'SPN write is a lead; account access still depends on obtaining and validating its password.',
+        'WriteOwner': 'Changing ownership can enable a later DACL change; it does not supply the target identity.',
+        'Owns': 'Ownership can enable a DACL change; it does not supply the target identity.',
+        'AddSelf': 'The principal may be able to add itself to this group; token membership must then be confirmed.',
+    }
+    for pair, edges in grouped.items():
+        if all(edge['edge'] == 'MemberOf' for edge in edges):
             continue
-        if (edge['to_id'] in targets or edge['to_kind'] in {'domain', 'gpo', 'ou', 'certtemplate', 'enterpriseca'}
-                or edge['edge'] in {'ForceChangePassword', 'AddMember', 'AddSelf', 'AddKeyCredentialLink', 'ReadGMSAPassword'}):
-            grouped[(edge['from_id'], edge['to_id'])].append(edge)
-    lines = []
-    for edges in grouped.values():
-        first = edges[0]
-        reason = targets.get(first['to_id']) or first['to_kind']
-        rights = ', '.join(f"{edge['edge']} [source: {_proof(edge['evidence'])}]" for edge in edges)
-        next_check = ('; check effective managed-password retrieval and the account\'s service role'
-                      if any(edge['edge'] == 'ReadGMSAPassword' for edge in edges) else '')
-        lines.append(f"{first['from']} [{first['from_id']}] -> {first['to']} [{first['to_id']}] "
-                     f"({reason}): {rights}{next_check}")
-    return lines
+        rights = {edge['edge'] for edge in edges}
+        messages = [explanations[edge['edge']] for edge in edges
+                    if edge['edge'] in explanations
+                    and not (edge['edge'] == 'WriteOwner' and 'Owns' in rights)]
+        target_kind = edges[0]['to_kind']
+        if target_kind == 'ou':
+            messages.append('Control of the OU object does not establish control of its children.')
+        if target_kind == 'gpo':
+            messages.append('Effective policy changes require the applicable GPO content and filtering.')
+        if target_kind in {'enterpriseca', 'aiaca', 'rootca'}:
+            messages.append('Directory-object control does not establish a CA service role.')
+        sources = ', '.join(_proof(edge['evidence']) for edge in edges)
+        note_by_pair[pair] = (target_kind, ' '.join(dict.fromkeys(messages)), sources)
+
+    graph = []
+    notes = []
+    note_numbers = {}
+    expanded = set()
+
+    def walk(sid: str, prefix: str, ancestors: set[str]) -> None:
+        expanded.add(sid)
+        children = [target for target in adjacency.get(sid, [])
+                    if not (target in ancestors
+                            and all(edge['edge'] == 'MemberOf' for edge in grouped[(sid, target)]))]
+        for index, target in enumerate(children):
+            edges = grouped[(sid, target)]
+            last = index == len(children) - 1
+            connector = '└── ' if last else '├── '
+            rights = ', '.join(dict.fromkeys(edge['edge'] for edge in edges))
+            pair = (sid, target)
+            ref = ''
+            if pair in note_by_pair:
+                if pair not in note_numbers:
+                    number = len(note_numbers) + 1
+                    note_numbers[pair] = number
+                    kind, message, sources = note_by_pair[pair]
+                    detail = f'{message} ' if message else ''
+                    notes.append(f'[{number}] {label(target)} [{kind}]: {detail}Source: {sources}')
+                ref = f' [{note_numbers[pair]}]'
+            graph.append(f'{prefix}{connector}{rights} → {label(target)}{ref}')
+            if target not in ancestors and target not in expanded:
+                walk(target, prefix + ('    ' if last else '│   '), ancestors | {target})
+
+    for root in roots:
+        if root not in expanded:
+            if graph:
+                graph.append('')
+            graph.append(label(root))
+            walk(root, '', {root})
+    for source in sorted(adjacency, key=lambda sid: (label(sid).casefold(), sid)):
+        if source not in expanded:
+            if graph:
+                graph.append('')
+            graph.append(label(source))
+            walk(source, '', {source})
+
+    members = defaultdict(list)
+    for edge in data['recorded_edges']:
+        if (edge['edge'] == 'MemberOf' and edge['to_id'] in adjacency
+                and edge['to_kind'] == 'group' and edge['from_resolved']
+                and not edge['from_deleted'] and edge['from_id'] not in dc_ids
+                and edge['from_kind'] == 'user'
+                and (rid_of(edge['from_id']) or 0) >= 1000):
+            members[edge['to_id']].append(edge['from'])
+    for group in sorted(members, key=lambda sid: (label(sid).casefold(), sid)):
+        if members[group]:
+            notes.append(f'{label(group)} recorded members: {", ".join(sorted(set(members[group])))}.')
+    return ControlTree(graph, notes)
 
 
 _CREDENTIAL_TERM = re.compile(r'\b(?:password|passwd|pwd|passphrase|credential|secret|token|api[_ -]?key)\b', re.I)
@@ -518,7 +666,7 @@ def _deleted_domain_grant_lines(data: dict) -> list[str]:
     return lines
 
 
-def _report_sections(data: dict) -> list[tuple[str, list[str]]]:
+def _report_sections(data: dict) -> list[tuple[str, list[str] | ControlTree]]:
     sections = []
     warnings = [item for item in data['analysis']['warnings']
                 if 'field paths have no dedicated query outlet' not in item
@@ -553,17 +701,36 @@ def _report_sections(data: dict) -> list[tuple[str, list[str]]]:
     delegation_lines += [rbcd_finding(row) + f" [source: {row['source_file']}]"
                          for row in delegation['rbcd']]
     if delegation_lines:
-        sections.append(('Delegation settings for review', [
+        sections.append(('Delegation settings', [
             'A recorded delegation setting identifies a boundary to verify; it does not establish a usable route.',
             *delegation_lines,
         ]))
     if data['trusts']:
-        sections.append(('Trust boundaries for review', [
+        sections.append(('Trust boundaries', [
             'Trust traversal is not modeled; verify cross-domain access before treating this relationship as a route.',
             *[_report_trust_finding(row) for row in data['trusts']],
         ]))
     default_high_privilege_rids = {500, 512, 518, 519, 544}
     dc_ids = {row['id'] for row in data['domain_controllers']}
+    member_of = defaultdict(set)
+    for edge in data['recorded_edges']:
+        if edge['edge'] == 'MemberOf' and edge['from_resolved'] and edge['to_resolved']:
+            member_of[edge['from_id']].add(edge['to_id'])
+
+    def inherited_privileged_groups(principal: str) -> set[str]:
+        seen, queue = set(), deque([principal])
+        while queue:
+            for group in member_of[queue.popleft()]:
+                if group not in seen:
+                    seen.add(group)
+                    queue.append(group)
+        return {group for group in seen if rid_of(group) in default_high_privilege_rids}
+
+    def routine_privileged_replication(row: dict) -> bool:
+        privileged = inherited_privileged_groups(row['principal_id'])
+        return bool(privileged) and all(
+            grant['granted_to_id'] in privileged for grant in row['grants'])
+
     def routine_dc_replication(row: dict) -> bool:
         return row['principal_id'] in dc_ids and all(
             rid_of(grant['granted_to_id']) == 516
@@ -572,18 +739,28 @@ def _report_sections(data: dict) -> list[tuple[str, list[str]]]:
 
     dcsync_findings = [row for row in data['dcsync_findings']
                        if rid_of(row['principal_id']) not in default_high_privilege_rids
-                       and not routine_dc_replication(row)]
+                       and not routine_dc_replication(row)
+                       and not routine_privileged_replication(row)]
     if dcsync_findings:
         sections.append(('DCSync grant combinations', [
             'Grants are combined within each domain through recorded membership; verify effective access and deny ACEs.',
             *[dcsync_finding(row, data['replication_aces']) for row in dcsync_findings],
         ]))
-    control_lines = _reviewable_control_lines(data)
-    if control_lines:
-        sections.append(('Object control for review', [
-            'Recorded ACL edges from outside the investigation-target set; confirm effective rights and the operation on each object type.',
-            *control_lines,
+    control_tree = _control_tree(data)
+    if control_tree.graph:
+        sections.append(('Object control', control_tree))
+    privileged_memberships = [edge for edge in data['recorded_edges']
+                              if edge['edge'] == 'MemberOf' and edge['from_kind'] == 'user'
+                              and edge['from_resolved'] and edge['to_resolved']
+                              and not edge['from_deleted'] and not edge['to_deleted']
+                              and (rid_of(edge['from_id']) or 0) >= 1000
+                              and rid_of(edge['to_id']) in default_high_privilege_rids]
+    if privileged_memberships:
+        sections.append(('Privileged memberships', [
+            f"{edge['from']} --MemberOf--> {edge['to']} [source: {_proof(edge['evidence'])}]"
+            for edge in privileged_memberships
         ]))
+    privileged_members = {edge['from_id'] for edge in privileged_memberships}
     historical_lines = _unresolved_control_lines(data)
     if historical_lines:
         sections.append(('Historical or unresolved ACL principals', [
@@ -605,7 +782,8 @@ def _report_sections(data: dict) -> list[tuple[str, list[str]]]:
     for key, title in [('da_reachers', 'Principals reaching Domain Admins'),
                        ('reachers', 'Principals reaching high-value targets')]:
         rows = [row for row in data[key]
-                if rid_of(row['id']) not in default_high_privilege_rids]
+                if rid_of(row['id']) not in default_high_privilege_rids
+                and row['id'] not in privileged_members]
         if key == 'reachers':
             da_paths = {(row['name'], tuple((step['name'], step['via']) for step in row['path']))
                         for row in data['da_reachers']}
@@ -635,7 +813,11 @@ def _report_sections(data: dict) -> list[tuple[str, list[str]]]:
 def as_text(data: dict) -> str:
     lines = []
     for title, entries in _report_sections(data):
-        lines.extend([f"== {title} ==", *('  ' + item for item in entries), ''])
+        if isinstance(entries, ControlTree):
+            lines.extend([f"== {title} ==", *entries.graph, '',
+                          *('  ' + item for item in entries.notes), ''])
+        else:
+            lines.extend([f"== {title} ==", *('  ' + item for item in entries), ''])
     return '\n'.join(lines).rstrip() + '\n'
 
 
@@ -645,8 +827,14 @@ def as_md(data: dict) -> str:
     lines = ['# BloodHound offline analysis', '']
     for title, entries in _report_sections(data):
         lines.extend([f"## {escape(title, quote=False)}", ''])
-        lines.extend('- ' + escape(item.replace('\n', '\\n'), quote=False)
-                     for item in entries)
+        if isinstance(entries, ControlTree):
+            lines.extend(['```text', *entries.graph, '```'])
+            if entries.notes:
+                lines.append('')
+                lines.extend('- ' + escape(item, quote=False) for item in entries.notes)
+        else:
+            lines.extend('- ' + escape(item.replace('\n', '\\n'), quote=False)
+                         for item in entries)
         lines.append('')
     return '\n'.join(lines).rstrip() + '\n'
 

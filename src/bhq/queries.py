@@ -28,6 +28,9 @@ from .loader import WELL_KNOWN_HIGH_VALUE_RIDS, Graph, rid_of
 NAMED_HIGH_VALUE_GROUPS = {"DNSADMINS"}
 
 DOMAIN_CONTROL_RIGHTS = {"GenericAll", "WriteDacl", "WriteOwner", "Owns"}
+# These recorded rights affect a host or its object; they do not supply the
+# computer account's principal state for an ACL/membership path.
+NON_PRINCIPAL_PATH_RIGHTS = {"ReadLAPSPassword", "AddAllowedToAct", "WriteAllowedToAct"}
 
 ANALYSIS_SCOPE = {
     "path_edges": ["ACL object control", "group membership"],
@@ -255,7 +258,8 @@ def shortest_path(g: Graph, start_sid: str, goal_sids: set[str]) -> list[tuple[s
         if cur in goal_sids:
             goal = cur
             break
-        nexts = [(t, r) for (t, r) in g.control_edges.get(cur, [])]
+        nexts = [(t, r) for (t, r) in g.control_edges.get(cur, [])
+                 if r not in NON_PRINCIPAL_PATH_RIGHTS]
         nexts += [(gr, "MemberOf") for gr in g.member_edges.get(cur, [])]
         for nxt, label in nexts:
             if g.is_live(nxt) and nxt not in prev:
@@ -291,7 +295,8 @@ def who_can_reach_high_value(g: Graph, goal: str = "high-value") -> dict[str, tu
     q = deque(goals)
     while q:
         cur = q.popleft()
-        inbound = list(g.control_edges_rev.get(cur, []))
+        inbound = [(src, right) for src, right in g.control_edges_rev.get(cur, [])
+                   if right not in NON_PRINCIPAL_PATH_RIGHTS]
         inbound += [(m, "MemberOf") for m in g.member_edges_rev.get(cur, [])]
         for src, right in inbound:
             if g.is_live(src) and src not in dist:

@@ -1,4 +1,4 @@
-# Recorded data and conditional analysis (bhq 0.5.1)
+# Recorded data and conditional analysis (bhq 0.5.2)
 
 bhq is an offline analyzer. These commands read a saved collection; they do not
 connect to hosts, authenticate, change AD objects, or execute the routes shown.
@@ -30,7 +30,13 @@ control from outside the investigation-target set, reachable targets, delegation
 trust, host access, recorded sessions, GPO local-group changes and AD CS conditions.
 It omits empty session entries, GPO link-only scope expansion, empty high-value
 group lists, duplicate replication ACEs and paths from already privileged built-in
-principals. This is a relevance filter, not a comparison with AD defaults: the
+principals. `Object control` shows selected ACL edges as a tree, with relevant
+group membership between ACL edges and source references below. Direct membership
+in a privileged group has its own short list. `ReadLAPSPassword` and AllowedToAct
+edges remain recorded but do not imply the computer-account identity in an ACL
+path. An unresolved `Enroll` trustee on a candidate template is shown by SID;
+the collection alone may not identify whether the principal was deleted or
+outside its scope. This is a relevance filter, not a comparison with AD defaults: the
 collection cannot show whether an ACL or GPO was modified from its original state.
 The `sessions`, `policy`, `dcsync` and `reachers` commands retain focused views.
 Use `clues`, `controls`, `coverage`, and `object` for focused inspection. The JSON
