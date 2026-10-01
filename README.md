@@ -161,7 +161,7 @@ haslaps, and enabled=false). It does not verify credentials or infer that a flag
 proves exploitability. Fields not selected remain available through `object`.
 `clues` and JSON reports retain all selected clue objects and their source
 files. Text and Markdown reports surface account clues and descriptions on
-non-builtin groups for review.
+groups with RID 1000 or higher for review.
 
 ## Contributing
 
