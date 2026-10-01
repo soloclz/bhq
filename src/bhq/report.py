@@ -1,5 +1,4 @@
-"""One-shot report — the four AD-analysis questions in one pass, optionally
-anchored on a foothold principal (`--from`).
+"""One-shot inventory of recorded BloodHound material and derived relationships.
 
 `build()` produces a structured dict; `as_text` / `as_md` / `as_json` render it.
 Markdown/JSON are for dropping into `evidence/` and the engagement report; text
@@ -11,13 +10,115 @@ from __future__ import annotations
 import json
 
 from . import queries
-from .loader import Graph
+from .loader import CONTROL_RIGHTS, DCSYNC_RIGHTS, Graph
 from .analysis import observations, policy, pki, routes, inventory, presentation
+from .analysis.common import evidence, ref
 
 
-def build(g: Graph, start_name: str | None = None, goal: str = "high-value") -> dict:
+def _edge_evidence(g: Graph) -> dict[tuple[str, str, str], list[dict]]:
+    sources: dict[tuple[str, str, str], list[dict]] = {}
+
+    def add(source: str, relationship: str, target: str, owner: str, field: str) -> None:
+        sources.setdefault((source, relationship, target), []).append(evidence(g, owner, field))
+
+    for obj in g.objects:
+        owner = obj['ObjectIdentifier']
+        for i, ace in enumerate(obj.get('Aces') or []):
+            principal, right = ace.get('PrincipalSID'), ace.get('RightName')
+            if principal and right in CONTROL_RIGHTS:
+                add(principal, right, owner, owner, f'Aces[{i}]')
+        if g.kind(owner) == 'group':
+            for i, member in enumerate(obj.get('Members') or []):
+                principal = member.get('ObjectIdentifier')
+                if principal:
+                    add(principal, 'MemberOf', owner, owner, f'Members[{i}]')
+        if g.kind(owner) in ('user', 'computer') and obj.get('PrimaryGroupSID'):
+            add(owner, 'MemberOf', obj['PrimaryGroupSID'], owner, 'PrimaryGroupSID')
+    return sources
+
+
+def _all_recorded_edges(g: Graph) -> list[dict]:
+    """Inventory every indexed ACL/membership relationship, including unresolved sources."""
+    provenance = _edge_evidence(g)
+    rows = []
+    for source, outgoing in g.control_edges.items():
+        for target, relationship in outgoing:
+            rows.append((source, relationship, target))
+    for source, groups in g.member_edges.items():
+        rows.extend((source, 'MemberOf', target) for target in groups)
+    return [{'from_id': source, 'from': g.name(source), 'to_id': target,
+             'to': g.name(target), 'edge': relationship,
+             'evidence': provenance.get((source, relationship, target), [])}
+            for source, relationship, target in sorted(set(rows))]
+
+
+def _replication_aces(g: Graph) -> list[dict]:
+    rows = []
+    for domain in g.domains:
+        sid = domain['ObjectIdentifier']
+        for i, ace in enumerate(domain.get('Aces') or []):
+            if ace.get('RightName') in DCSYNC_RIGHTS and ace.get('PrincipalSID'):
+                principal = ace['PrincipalSID']
+                rows.append({'domain': ref(g, sid), 'principal': ref(g, principal),
+                             'right': ace['RightName'], 'evidence': evidence(g, sid, f'Aces[{i}]')})
+    return rows
+
+
+def _account_settings(g: Graph) -> list[dict]:
+    """Preserve relevant recorded account settings with field-level provenance."""
+    fields = ('admincount', 'enabled', 'passwordnotreqd', 'dontreqpreauth',
+              'hasspn', 'serviceprincipalnames', 'pwdlastset', 'lastlogon',
+              'unconstraineddelegation', 'allowedtodelegate', 'trustedtoauth', 'haslaps')
+    rows = []
+    for obj in g.users + g.computers:
+        sid = obj['ObjectIdentifier']
+        props = obj.get('Properties') or {}
+        values = [{'field': field, 'value': props[field],
+                   'evidence': evidence(g, sid, f'Properties.{field}')}
+                  for field in fields if field in props and props[field] is not None
+                  and props[field] != '' and props[field] != []]
+        if values:
+            rows.append({'account': ref(g, sid), 'settings': values})
+    return rows
+
+
+def _recorded_reachability(g: Graph, start: str) -> tuple[list[dict], list[dict], dict[str, tuple[str, str] | None]]:
+    provenance = _edge_evidence(g)
+    parents: dict[str, tuple[str, str] | None] = {start: None}
+    distances = {start: 0}
+    edges = []
+    emitted = set()
+    for depth, source, relationship, target in queries.control_rows(g, start, max_depth=None):
+        key = (source, relationship, target)
+        if key not in emitted:
+            emitted.add(key)
+            edges.append({'depth': depth + 1, 'from_id': source, 'from': g.name(source),
+                          'to_id': target, 'to': g.name(target), 'edge': relationship,
+                          'evidence': provenance.get(key, [])})
+        if target not in parents:
+            parents[target] = (source, relationship)
+            distances[target] = depth + 1
+    nodes = [{'id': sid, 'name': g.name(sid), 'kind': g.kind(sid), 'hops': distances[sid],
+              'first_parent': parents[sid][0], 'via': parents[sid][1]}
+             for sid in parents if sid != start]
+    return nodes, edges, parents
+
+
+def _path_from_parents(g: Graph, parents: dict, target: str) -> list[dict]:
+    chain = []
+    current = target
+    while parents[current] is not None:
+        source, relationship = parents[current]
+        chain.append({'id': current, 'name': g.name(current), 'kind': g.kind(current), 'via': relationship})
+        current = source
+    chain.append({'id': current, 'name': g.name(current), 'kind': g.kind(current), 'via': None})
+    return list(reversed(chain))
+
+
+def build(g: Graph, start_name: str | None = None) -> dict:
+    targets = queries.goal_sids(g, 'high-value')
+    da_targets = queries.goal_sids(g, 'da')
     data: dict = {
-        "goal": goal,
         "collection": queries.coverage(g),
         "analysis": {
             "scope": queries.ANALYSIS_SCOPE,
@@ -34,11 +135,23 @@ def build(g: Graph, start_name: str | None = None, goal: str = "high-value") -> 
             {"group": grp, "members": members, "why": why}
             for grp, members, why in queries.high_value_members(g)
         ],
+        "account_settings": _account_settings(g),
+        "replication_aces": _replication_aces(g),
+        "recorded_edges": _all_recorded_edges(g),
+        "targets": [{'id': sid, 'name': g.name(sid), 'kind': g.kind(sid),
+                     'reason': reason, 'domain_admins': sid in da_targets}
+                    for sid, reason in sorted(targets.items())],
         "reachers": [
             {"name": g.name(sid), "hops": hops,
              "path": [{"name": n, "via": via} for n, via in chain]}
             for sid, (hops, chain) in sorted(
-                queries.who_can_reach_high_value(g, goal).items(), key=lambda kv: (kv[1][0], g.name(kv[0])))
+                queries.who_can_reach_high_value(g, 'high-value').items(), key=lambda kv: (kv[1][0], g.name(kv[0])))
+        ],
+        "da_reachers": [
+            {"name": g.name(sid), "hops": hops,
+             "path": [{"name": n, "via": via} for n, via in chain]}
+            for sid, (hops, chain) in sorted(
+                queries.who_can_reach_high_value(g, 'da').items(), key=lambda kv: (kv[1][0], g.name(kv[0])))
         ],
         "from": start_name,
         "extended": {
@@ -47,6 +160,7 @@ def build(g: Graph, start_name: str | None = None, goal: str = "high-value") -> 
             "adcs": pki.adcs(g), "coverage": inventory.inventory(g),
         },
     }
+    data['raw_observations'] = inventory.populated_raw(g, data['extended']['coverage'])
     if start_name:
         sid = g.sid_of(start_name)
         if not sid:
@@ -57,38 +171,148 @@ def build(g: Graph, start_name: str | None = None, goal: str = "high-value") -> 
             else:
                 data["error"] = f"principal not found: {start_name}"
             return data
-        data['extended']['adcs'] = pki.adcs(g, sid)
-        data['candidate_route'] = routes.route(g, sid, set(queries.goal_sids(g, goal)))
-        path, goals = queries.path_to_goal(g, sid, goal)
+        data['selected_adcs'] = pki.adcs(g, sid)
+        nodes, edges, parents = _recorded_reachability(g, sid)
+        data['control_reachability'] = nodes
+        data['controls'] = edges
+        data['goal_paths'] = [
+            {'target': ref(g, target), 'reason': reason, 'domain_admins': target in da_targets,
+             'path': _path_from_parents(g, parents, target)}
+            for target, reason in sorted(targets.items()) if target in parents
+        ]
+        data['candidate_reachability'] = routes.reachable(g, sid, targets)
+        candidates = data['candidate_reachability']['goal_routes']
+        best = min(candidates, key=lambda row: len(row['steps']), default=None)
+        data['candidate_route'] = {
+            'start': ref(g, sid), 'target_state': 'principal',
+            'goals': [ref(g, target) for target in sorted(targets)],
+            'steps': best['steps'] if best else None,
+            'status': 'candidate' if best else 'no-modeled-route',
+            'limitations': data['candidate_reachability']['limitations'],
+        }
+        path, goals = queries.path_to_goal(g, sid, 'high-value')
         data["path"] = {
             "goals": goals,
-            "endpoint_reason": queries.goal_sids(g, goal).get(path[-1][0]) if path else None,
+            "endpoint_reason": targets.get(path[-1][0]) if path else None,
             "path": [{"name": g.name(s), "kind": g.kind(s), "via": lbl} for s, lbl in path] if path else None,
         }
-        data["controls"] = [
-            {"depth": d, "from": frm, "edge": e, "to": to}
-            for d, frm, e, to in queries.controls(g, sid, max_depth=2)
-        ]
         data["local"] = [{"computer": n, "right": r} for n, r in queries.local_admin_of(g, sid)]
     return data
 
 
-def _extended_lines(data):
-    ext = data.get('extended', {})
-    if not ext:
+def _proof(value) -> str:
+    if not value:
+        return ''
+    if isinstance(value, list):
+        return ', '.join(_proof(item) for item in value)
+    return f"{value.get('source_file')}:{value.get('object_id')}:{value.get('field')}"
+
+
+def _material_sections(data: dict) -> list[tuple[str, list[str]]]:
+    """All populated analyzer results, followed by unmodeled recorded values."""
+    ext = data['extended']
+    sections = []
+    for command, title in [('access', 'Recorded local access'),
+                           ('sessions', 'Recorded sessions'),
+                           ('sid-history', 'Recorded SID history'),
+                           ('user-rights', 'Recorded user rights')]:
+        rows = ext[command]
+        if command == 'sessions':
+            rows = [row for row in rows if row['state'] != 'missing']
+        if rows:
+            sections.append((title, presentation.lines(command, rows)[1:] + [
+                'record: ' + json.dumps(row, ensure_ascii=False, sort_keys=True)
+                for row in rows
+            ]))
+
+    pol = ext['policy']
+    if any(pol[key] for key in ('links', 'effects', 'changes', 'issues')):
+        details = [f"{family}: {json.dumps(row, ensure_ascii=False, sort_keys=True)}"
+                   for family in ('links', 'effects', 'changes', 'issues') for row in pol[family]]
+        sections.append(('Recorded GPO and policy material', presentation.lines('policy', pol)[1:] + details))
+
+    adcs = ext['adcs']
+    if any(adcs[key] for key in ('objects', 'cas', 'templates', 'publications', 'issuance_policies')):
+        families = ('objects', 'cas', 'templates', 'publications', 'issuance_policies')
+        details = [f"{family}: {json.dumps(row, ensure_ascii=False, sort_keys=True)}"
+                   for family in families for row in adcs[family]]
+        sections.append(('Recorded AD CS material', presentation.lines('adcs', adcs, True)[1:] + details))
+        if 'selected_adcs' in data:
+            selected = data['selected_adcs']
+            selected_details = [f"{family}: {json.dumps(row, ensure_ascii=False, sort_keys=True)}"
+                                for family in families for row in selected[family]]
+            sections.append(('AD CS for selected identity',
+                             presentation.lines('adcs', selected, True)[1:] + selected_details))
+
+    raw = data['raw_observations']
+    if raw:
+        sections.append(('Populated fields without a dedicated query', [
+            f"{row['object']['name']} [{row['object']['id']}] {row['field']}="
+            f"{json.dumps(row['value'], ensure_ascii=False)} [source: {_proof(row['evidence'])}]"
+            for row in raw
+        ]))
+    coverage = ext['coverage']
+    raw_fields = [row for row in coverage['fields'] if row['status'] == 'raw-only']
+    if raw_fields:
+        sections.append(('Field paths without a dedicated query', [
+            f"{row['kind']}.{row['field']}: {row['object_count']} objects; "
+            f"examples: {_proof(row['examples'])}" for row in raw_fields
+        ]))
+    if coverage['unmodeled_ace_rights']:
+        sections.append(('ACE rights without a model', [
+            f"{row['right']} principal={row['principal_id']} [source: {_proof(row['evidence'])}]"
+            for row in coverage['unmodeled_ace_rights']
+        ]))
+    if coverage['unhandled_files']:
+        sections.append(('JSON files outside the loader', coverage['unhandled_files']))
+    return sections
+
+
+def _from_sections(data: dict) -> list[tuple[str, list[str]]]:
+    if not data.get('from') or data.get('error'):
         return []
-    pol, pki_data = ext['policy'], ext['adcs']
-    raw = sum(r['status'] == 'raw-only' for r in ext['coverage']['fields'])
-    lines = ['', 'Additional recorded data (full details: named command or JSON report):',
-             f"- sessions: {sum(len(r['entries']) for r in ext['sessions'])} entries across {len(ext['sessions'])} method records",
-             f"- sid-history: {len(ext['sid-history'])} entries; user-rights: {len(ext['user-rights'])} assignments",
-             f"- policy: {len(pol['links'])} links, {len(pol['effects'])} scope results, {len(pol['changes'])} projected group records, {len(pol['issues'])} issues",
-             f"- adcs: {len(pki_data['cas'])} enterprise CAs, {len(pki_data['templates'])} templates, {len(pki_data['publications'])} publication records",
-             f"- coverage: {raw} raw-only field paths, {len(ext['coverage']['unmodeled_ace_rights'])} unmodeled ACE entries; use bhq coverage <collection> --raw-only"]
-    if 'candidate_route' in data:
-        lines += ['', 'Conditional route (account/object/host states):']
-        lines += presentation.lines('route', data['candidate_route'])
-    return lines
+    sections = []
+    sections.append(('Recorded paths to high-value targets', [
+        f"{row['target']['name']} [{row['target']['id']}] "
+        f"({'Domain Admins' if row['domain_admins'] else row['reason']}): "
+        + ' '.join((f"--{step['via']}--> " if step['via'] else '') + step['name']
+                   for step in row['path'])
+        for row in data['goal_paths']
+    ] or ['(no recorded ACL/membership path to a loaded target)']))
+
+    sections.append(('All reachable ACL control and membership edges', [
+        f"hop {row['depth']}: {row['from']} [{row['from_id']}] "
+        f"--{row['edge']}--> {row['to']} [{row['to_id']}] "
+        f"[source: {_proof(row['evidence'])}]"
+        for row in data['controls']
+    ] or ['(no outbound recorded edges)']))
+
+    candidate = data['candidate_reachability']
+    if candidate['states']:
+        sections.append(('All reachable conditional states', [
+            f"{row['target']['name']} [{row['target']['id']}] [{row['state']}] "
+            f"({row['hops']} hops)" for row in candidate['states']
+        ]))
+    if candidate['edges']:
+        sections.append(('All reachable conditional transitions', [
+            f"{row['source']['name']} [{row['source_state']}] --{row['relationship']}--> "
+            f"{row['target']['name']} [{row['target_state']}] "
+            f"[source: {_proof(row['evidence'])}] "
+            f"[requires: {'; '.join(row['requires']) or '(none)'}]"
+            for row in candidate['edges']
+        ]))
+    if candidate['goal_routes']:
+        sections.append(('Conditional routes to high-value targets', [
+            f"{row['target']['name']} [{row['target']['id']}] ({row['reason']}): "
+            + ' '.join(step['relationship'] + '→' + step['target']['name']
+                       for step in row['steps'])
+            for row in candidate['goal_routes']
+        ]))
+    if data['local']:
+        sections.append(('Local access for selected identity', [
+            f"{row['computer']}: {row['right']}" for row in data['local']
+        ]))
+    return sections
 
 
 def _coverage_line(c: dict) -> str:
@@ -112,7 +336,8 @@ def trust_finding(row: dict) -> str:
     fields = ("TargetDomainName", "TargetDomainSid", "TrustDirection", "TrustType",
               "IsTransitive", "SidFilteringEnabled", "TrustAttributes")
     return (f"source={row['source']} [{row['source_id']}]; " + "; ".join(
-        f"{field}={json.dumps(trust.get(field), ensure_ascii=False)}" for field in fields))
+        f"{field}={json.dumps(trust.get(field), ensure_ascii=False)}" for field in fields)
+        + f" [source: {row['source_file']}]")
 
 
 def dcsync_finding(row: dict) -> str:
@@ -148,171 +373,112 @@ def _local_coverage_line(c: dict) -> str:
     return f"local groups attempted/answered of {c['computers']}:  {counts}"
 
 
+def _report_sections(data: dict) -> list[tuple[str, list[str]]]:
+    collection = data['collection']
+    sections = []
+    scope = [
+        _coverage_line(collection),
+        *_collector_lines(collection),
+        *[f"{kind}: {count} file(s)" for kind, count in sorted(collection['files'].items())],
+        *[f"{file}: {json.dumps(meta, ensure_ascii=False, sort_keys=True)}"
+          for file, meta in sorted(collection['metadata'].items())],
+    ]
+    if collection['computers']:
+        scope.append(_local_coverage_line(collection))
+    sections.append(('Collection', scope))
+    sections.append(('Collection and analysis limits',
+                     data['analysis']['warnings'] or ['No runtime collection warning.']))
+
+    sections.append(('Recorded property clues',
+                     [property_clue(row) for row in data['property_clues']] or
+                     ['(no selected populated properties)']))
+    roast = [f"Kerberoastable: {json.dumps(row, ensure_ascii=False)}"
+             for row in data['kerberoastable']]
+    roast += [f"AS-REP roastable: {name}" for name in data['asreproastable']]
+    sections.append(('Roasting settings', roast or ['(no matching recorded settings)']))
+
+    if data['account_settings']:
+        sections.append(('Recorded account settings', [
+            f"{row['account']['name']} [{row['account']['id']}] "
+            f"{setting['field']}={json.dumps(setting['value'], ensure_ascii=False)} "
+            f"[source: {_proof(setting['evidence'])}]"
+            for row in data['account_settings'] for setting in row['settings']
+        ]))
+
+    delegation = data['delegation']
+    delegation_lines = [f"Unconstrained delegation: {name}" for name in delegation['unconstrained']]
+    delegation_lines += [f"Constrained delegation: {row['name']} -> {delegation_targets(row)}"
+                         for row in delegation['constrained']]
+    delegation_lines += [rbcd_finding(row) + f" [source: {row['source_file']}]"
+                         for row in delegation['rbcd']]
+    sections.append(('Recorded delegation', delegation_lines or ['(no populated delegation setting)']))
+    if data['trusts']:
+        sections.append(('Recorded trusts', [trust_finding(row) for row in data['trusts']]))
+    if data['dcsync_findings']:
+        sections.append(('Recorded DCSync grant combinations', [
+            dcsync_finding(row) + ' | ' + json.dumps(row, ensure_ascii=False)
+            for row in data['dcsync_findings']
+        ]))
+    if data['replication_aces']:
+        sections.append(('Recorded replication ACEs', [
+            f"{row['principal']['name']} [{row['principal']['id']}] --{row['right']}--> "
+            f"{row['domain']['name']} [{row['domain']['id']}] "
+            f"[source: {_proof(row['evidence'])}]"
+            for row in data['replication_aces']
+        ]))
+    if data['high_value_groups']:
+        sections.append(('High-value group membership', [
+            f"{row['group']} ({row['why']}): {', '.join(row['members']) or '(empty)'}"
+            for row in data['high_value_groups']
+        ]))
+    if data['recorded_edges']:
+        sections.append(('Recorded ACL control and membership edges', [
+            f"{row['from']} [{row['from_id']}] --{row['edge']}--> "
+            f"{row['to']} [{row['to_id']}] [source: {_proof(row['evidence'])}]"
+            for row in data['recorded_edges']
+        ]))
+    if data['targets']:
+        sections.append(('Investigation targets', [
+            f"{row['name']} [{row['id']}] — "
+            f"{'Domain Admins' if row['domain_admins'] else row['reason']}"
+            for row in data['targets']
+        ]))
+    for key, title in [('da_reachers', 'Principals reaching Domain Admins'),
+                       ('reachers', 'Principals reaching high-value targets')]:
+        if data[key]:
+            sections.append((title, [
+                f"{row['name']} ({row['hops']} hops): "
+                + ' '.join(f"{step['name']}" + (f" --{step['via']}-->" if step['via'] else '')
+                           for step in row['path'])
+                for row in data[key]
+            ]))
+    if data.get('from'):
+        if data.get('error'):
+            sections.append((f"Selected identity: {data['from']}", [data['error']]))
+        else:
+            sections.extend((f"From {data['from']}: {title}", rows)
+                            for title, rows in _from_sections(data))
+    sections.extend(_material_sections(data))
+    return sections
+
+
 def as_text(data: dict) -> str:
-    c = data["collection"]
-    L = ["== collection ==", _coverage_line(c)]
-    L.extend(_collector_lines(c))
-    if c["computers"]:
-        L.append(_local_coverage_line(c))
-    warnings = data["analysis"]["warnings"]
-    L.append("\n== analysis confidence ==")
-    if warnings:
-        L.extend(f"  ! {warning}" for warning in warnings)
-    else:
-        L.append("  collection has the core object types; path scope limits still apply")
-    excluded = ", ".join(data["analysis"]["scope"]["not_modeled"])
-    L.append(f"  path model: ACL control + group membership; not modeled: {excluded}")
-    clues = data["property_clues"]
-    L.append(f"\n== recorded property clues (showing {min(5, len(clues))}/{len(clues)}) ==")
-    L.extend(property_clue(row) for row in clues[:5])
-    if len(clues) > 5:
-        L.append("Use bhq clues <collection> for all selected properties; these are not verified credentials.")
-    L.append("\n== Q1 offline-crackable ==")
-    L.append(f"Kerberoastable ({len(data['kerberoastable'])}):")
-    for k in data["kerberoastable"]:
-        L.append(f"  {k['name']}  {','.join(k['spns'])}" + ("  [admincount]" if k["admincount"] else ""))
-    L.append("AS-REP roastable: " + (", ".join(data["asreproastable"]) or "(none)"))
-    L.append("\n== Q4 special rights ==")
-    L.append("Unconstrained delegation: " + (", ".join(data["delegation"]["unconstrained"]) or "(none)"))
-    for cd in data["delegation"]["constrained"]:
-        L.append(f"Constrained delegation: {cd['name']} -> {delegation_targets(cd)}")
-    L.append("Recorded RBCD configuration (not an executable path):")
-    L.extend("  " + rbcd_finding(row) for row in data["delegation"]["rbcd"])
-    if not data["delegation"]["rbcd"]:
-        L.append("  (no populated AllowedToAct in loaded computers)")
-    L.append("Recorded trusts (direction is relative to source; null means not recorded):")
-    L.extend("  " + trust_finding(row) for row in data["trusts"])
-    if not data["trusts"]:
-        L.append("  (no trust entries in loaded domains; collection scope still applies)")
-    L.append("Recorded DCSync rights:")
-    L.extend("  " + dcsync_finding(row) for row in data["dcsync_findings"])
-    if not data["dcsync_findings"]:
-        L.append("  (no matching recorded grant combination)")
-    L.append("\n== high-value groups (derived, not a name list) ==")
-    for hv in data["high_value_groups"]:
-        if hv["members"]:
-            L.append(f"{hv['group']} [{hv['why']}] ({len(hv['members'])}): {', '.join(hv['members'])}")
-        elif hv["why"] == "well-known-high-value-rid":
-            L.append(f"{hv['group']} [{hv['why']}] (0)")     # built-in and empty is the normal state
-        else:
-            # Granted a dangerous right *and* empty: membership audits see nothing
-            # while the right stays live. Whoever can write `member` becomes it.
-            L.append(f"{hv['group']} [{hv['why']}] (0 — privilege granted but no members; "
-                     f"invisible to membership audits, live to anyone who can write `member`)")
-    r = data["reachers"]
-    L.append(f"\n== who can reach {data['goal']} targets ({len(r)}) ==")
-    if not r:
-        L.append("  (no recorded paths from outside the selected goal set)")
-    for row in r:
-        arrows = " ".join(
-            (f"{h['name']} --{h['via']}-->" if h["via"] else h["name"]) for h in row["path"])
-        L.append(f"  {row['name']} ({row['hops']} hop{'s' if row['hops'] != 1 else ''}): {arrows}")
-    L.extend(_extended_lines(data))
-    if data.get("from"):
-        L.append(f"\n== Q2 from '{data['from']}' ==")
-        if data.get("error"):
-            L.append(f"  ! {data['error']}")
-            return "\n".join(L)
-        p = data["path"]
-        L.append(f"Shortest path to {data['goal']} targets ({len(p['goals'])} goals) "
-                 f"— endpoint reason: {p['endpoint_reason']}:")
-        if p["path"]:
-            for hop in p["path"]:
-                via = f"  --{hop['via']}-->" if hop["via"] else ""
-                L.append(f"  {via} {hop['name']} [{hop['kind']}]")
-        else:
-            L.append("  (no recorded ACL/membership path; collection and model limits still apply)")
-        L.append("Outbound control (<=2 hops):")
-        for r in data["controls"] or []:
-            L.append(f"  {'  ' * r['depth']}{r['from']} --{r['edge']}--> {r['to']}")
-        if not data["controls"]:
-            L.append("  (none)")
-        L.append("Q3 local admin/remote: " + (", ".join(f"{r['computer']}({r['right']})" for r in data["local"]) or "(none collected)"))
-    return "\n".join(L)
+    lines = []
+    for title, entries in _report_sections(data):
+        lines.extend([f"== {title} ==", *('  ' + item for item in entries), ''])
+    return '\n'.join(lines).rstrip() + '\n'
 
 
 def as_md(data: dict) -> str:
-    c = data["collection"]
-    L = ["# BloodHound offline analysis", "", "## Collection", "", f"`{_coverage_line(c)}`"]
-    for line in _collector_lines(c):
-        L += ["", line]
-    if c["computers"]:
-        L += ["", f"`{_local_coverage_line(c)}`"]
-    L += ["", "## Analysis limits and collection warnings", ""]
-    warnings = data["analysis"]["warnings"]
-    if warnings:
-        L.extend(f"> ⚠ {warning}" for warning in warnings)
-    else:
-        L.append("Core object types are present; the path-scope limits below still apply.")
-    excluded = ", ".join(data["analysis"]["scope"]["not_modeled"])
-    L += ["", f"**Path model:** ACL control + group membership. **Not modeled:** {excluded}."]
-    clues = data["property_clues"]
-    L += ["", f"## Recorded property clues (showing {min(5, len(clues))}/{len(clues)})", ""]
-    L.extend("- " + property_clue(row) for row in clues[:5])
-    if len(clues) > 5:
-        L += ["", "Use `bhq clues <collection>` for all selected properties; these are not verified credentials."]
-    L += ["", "## Q1 — offline-crackable", "", f"**Kerberoastable ({len(data['kerberoastable'])})**", "",
-          "| account | SPN | admincount |", "|---|---|---|"]
-    for k in data["kerberoastable"]:
-        L.append(f"| `{k['name']}` | `{','.join(k['spns'])}` | {'yes' if k['admincount'] else ''} |")
-    L += ["", f"**AS-REP roastable:** {', '.join('`%s`' % a for a in data['asreproastable']) or '(none)'}"]
-    L += ["", "## Q4 — special rights", "",
-          f"- **Unconstrained delegation:** {', '.join('`%s`' % x for x in data['delegation']['unconstrained']) or '(none)'}"]
-    for cd in data["delegation"]["constrained"]:
-        L.append(f"- **Constrained delegation:** `{cd['name']}` → {delegation_targets(cd)}")
-    L += ["", "**Recorded RBCD configuration (not an executable path):**", ""]
-    L.extend("- " + rbcd_finding(row) for row in data["delegation"]["rbcd"])
-    if not data["delegation"]["rbcd"]:
-        L.append("- (no populated AllowedToAct in loaded computers)")
-    L += ["", "**Recorded trusts (direction relative to source; null means not recorded):**", ""]
-    L.extend("- " + trust_finding(row) for row in data["trusts"])
-    if not data["trusts"]:
-        L.append("- (no trust entries in loaded domains; collection scope still applies)")
-    L += ["", "**Recorded DCSync rights:**", ""]
-    L.extend("- " + dcsync_finding(row) for row in data["dcsync_findings"])
-    if not data["dcsync_findings"]:
-        L.append("- (no matching recorded grant combination)")
-    L += ["", "## High-value groups (derived, not a name list)", "",
-          "| group | why | members |", "|---|---|---|"]
-    for hv in data["high_value_groups"]:
-        members = ", ".join("`%s`" % m for m in hv["members"])
-        if not members:
-            members = ("_(none)_" if hv["why"] == "well-known-high-value-rid"
-                       else "_(none — privilege live but invisible to membership audits)_")
-        L.append(f"| `{hv['group']}` | {hv['why']} | {members} |")
-    L += ["", f"## Who can reach {data['goal']} targets ({len(data['reachers'])})", ""]
-    if not data["reachers"]:
-        L.append("_(no recorded paths from outside the selected goal set)_")
-    for row in data["reachers"]:
-        arrows = " ".join(
-            (f"`{h['name']}` —{h['via']}→" if h["via"] else f"`{h['name']}`") for h in row["path"])
-        hops = f"{row['hops']} hop" + ("s" if row["hops"] != 1 else "")
-        L.append(f"- **{row['name']}** ({hops}): {arrows}")
-    L.extend(_extended_lines(data))
-    if data.get("from"):
-        L += ["", f"## Q2 — from `{data['from']}`"]
-        if data.get("error"):
-            L.append(f"> {data['error']}")
-            return "\n".join(L)
-        p = data["path"]
-        L += ["", f"**Shortest path to {data['goal']} targets** ({len(p['goals'])} goals; "
-              f"the last hop names which one):", ""]
-        if p["path"]:
-            parts = [
-                (f"—{h['via']}→ `{h['name']}`" if h["via"] else f"`{h['name']}`")
-                for h in p["path"]
-            ]
-            L.append("> " + " ".join(parts))
-        else:
-            L.append("> (no recorded ACL/membership path; collection and model limits still apply)")
-        L += ["", "**Outbound control (≤2 hops):**", ""]
-        if data["controls"]:
-            for r in data["controls"]:
-                L.append(f"- {'  ' * r['depth']}`{r['from']}` —{r['edge']}→ `{r['to']}`")
-        else:
-            L.append("- (none)")
-        L += ["", "**Q3 local admin/remote:** " + (", ".join(f"`{r['computer']}` ({r['right']})" for r in data["local"]) or "(none collected)")]
-    return "\n".join(L) + "\n"
+    from html import escape
+
+    lines = ['# BloodHound offline analysis', '']
+    for title, entries in _report_sections(data):
+        lines.extend([f"## {escape(title, quote=False)}", ''])
+        lines.extend('- ' + escape(item.replace('\n', '\\n'), quote=False)
+                     for item in entries)
+        lines.append('')
+    return '\n'.join(lines).rstrip() + '\n'
 
 
 def as_json(data: dict) -> str:
@@ -322,5 +488,5 @@ def as_json(data: dict) -> str:
 RENDERERS = {"text": as_text, "md": as_md, "json": as_json}
 
 
-def render(g: Graph, start_name: str | None = None, fmt: str = "text", goal: str = "high-value") -> str:
-    return RENDERERS[fmt](build(g, start_name, goal))
+def render(g: Graph, start_name: str | None = None, fmt: str = "text") -> str:
+    return RENDERERS[fmt](build(g, start_name))

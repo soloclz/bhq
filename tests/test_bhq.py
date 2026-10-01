@@ -21,7 +21,7 @@ import zipfile
 
 import pytest
 
-from bhq import loader, queries, report
+from bhq import cli, loader, queries, report
 from bhq.loader import CollectionError, load
 
 DOM = "S-1-5-21-1-1-1"
@@ -341,17 +341,59 @@ def test_report_formats(tmp_path):
     # text mentions the kerberoastable account and the control edge
     txt = report.render(g, "alice", fmt="text")
     assert "alice" in txt and "ForceChangePassword" in txt
-    # markdown has a table header
+    # Markdown contains the complete material, including relationship evidence.
     md = report.render(g, "alice", fmt="md")
-    assert md.startswith("# BloodHound") and "| account | SPN | admincount |" in md
+    assert md.startswith("# BloodHound")
+    assert "## Recorded ACL control and membership edges" in md
+    assert "ForceChangePassword" in md and "t_users.json" in md
     # json round-trips and carries the structured findings
     data = json.loads(report.render(g, "alice", fmt="json"))
     assert data["dcsync"] == ["SRVADMINS@TEST.LOCAL", "alice"]
     assert data["path"]["path"][0]["name"] == "alice"
     assert any(k["name"] == "alice" for k in data["kerberoastable"])
+    assert any(row["right"] == "GetChanges" and row["evidence"]["source_file"] == "t_domains.json"
+               for row in data["replication_aces"])
+    assert any(setting["field"] == "serviceprincipalnames" and setting["evidence"]["source_file"] == "t_users.json"
+               for row in data["account_settings"] for setting in row["settings"])
     assert "scope" in data["analysis"]
     assert any("attempted on 0/1 computers" in w and "unknown, not absent" in w
                for w in data["analysis"]["warnings"])
+
+
+def test_report_exhausts_control_graph_and_keeps_alternate_edges(tmp_path):
+    _write(tmp_path)
+    users_file = tmp_path / "t_users.json"
+    users = json.loads(users_file.read_text())
+    by_sid = {row["ObjectIdentifier"]: row for row in users["data"]}
+    by_sid[CAROL]["Aces"] = [{"PrincipalSID": BOB, "RightName": "GenericWrite"},
+                             {"PrincipalSID": BOB, "RightName": "WriteDacl"}]
+    by_sid[DAVE]["Aces"] = [{"PrincipalSID": CAROL, "RightName": "GenericAll"}]
+    by_sid[ALICE]["Aces"] = [{"PrincipalSID": DAVE, "RightName": "GenericWrite"}]
+    by_sid[DAVE]["NewFeature"] = {"Finding": "retained material"}
+    users_file.write_text(json.dumps(users))
+    groups_file = tmp_path / "t_groups.json"
+    groups = json.loads(groups_file.read_text())
+    groups["data"][0]["Members"] = [{"ObjectIdentifier": DAVE}]
+    groups_file.write_text(json.dumps(groups))
+
+    data = report.build(load(tmp_path), "alice")
+    da_path = next(row["path"] for row in data["goal_paths"] if row["target"]["id"] == DA)
+    assert [step["id"] for step in da_path] == [ALICE, BOB, CAROL, DAVE, DA]
+    assert len(data["control_reachability"]) == len({row["id"] for row in data["control_reachability"]})
+    assert any(row["from_id"] == DAVE and row["to_id"] == ALICE for row in data["controls"])
+    alternatives = [row for row in data["controls"] if row["from_id"] == BOB and row["to_id"] == CAROL]
+    assert {row["edge"] for row in alternatives} == {"GenericWrite", "WriteDacl"}
+    assert all(row["evidence"][0]["source_file"] == "t_users.json" for row in alternatives)
+    assert any(row["from_id"] == BOB and row["to_id"] == CAROL for row in data["recorded_edges"])
+    assert any(row["value"] == "retained material" for row in data["raw_observations"])
+    md = report.as_md(data)
+    assert "hop 4:" in md and "retained material" in md and "NewFeature.Finding" in md
+
+
+def test_report_rejects_removed_goal_option(tmp_path, capsys):
+    _write(tmp_path)
+    assert cli.main(["report", str(tmp_path), "--goal", "da"]) == 2
+    assert "unexpected argument(s): --goal da" in capsys.readouterr().err
 
 
 def test_missing_empty_and_malformed_collections_are_rejected(tmp_path):

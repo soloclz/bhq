@@ -27,8 +27,10 @@ def test_gpo_creator_goal_is_not_domain_admins(tmp_path, capsys):
     assert 'goal: da' in output and 'no recorded path' in output
     assert 'local-admin hop' not in output
     data = report.build(g, 'dave')
-    assert data['goal'] == 'high-value'
     assert data['path']['endpoint_reason'] == 'well-known-high-value-rid'
+    assert any(row['target']['id'] == creator for row in data['goal_paths'])
+    assert not any(row['target']['id'] == DA for row in data['goal_paths'])
+    assert any(row['id'] == DA and row['domain_admins'] for row in data['targets'])
     assert 'path_to_da' not in data
     for render in (report.as_text, report.as_md):
         text = render(data)
@@ -198,7 +200,7 @@ def test_property_clues_preserve_values_false_flags_and_full_record(tmp_path, ca
     assert 'Ask the demo helpdesk' in output and 'not verified credentials' in output
 
 
-def test_report_clues_are_bounded_but_json_keeps_all(tmp_path):
+def test_report_keeps_all_clues_in_every_format(tmp_path):
     _write(tmp_path)
     replace_collection(tmp_path, 'users', [
         {'ObjectIdentifier': f'{DOM}-{1800+i}', 'Properties': {'name': f'USER-{i}', 'description': f'NOTE-{i}'}}
@@ -208,8 +210,7 @@ def test_report_clues_are_bounded_but_json_keeps_all(tmp_path):
     assert len(data['property_clues']) == 7
     for render in (report.as_text, report.as_md):
         output = render(data)
-        assert 'showing 5/7' in output and 'NOTE-6' not in output
-        assert 'bhq clues' in output
+        assert all(f'NOTE-{i}' in output for i in range(7))
 
 
 def test_rbcd_configuration_preserves_principals_without_creating_paths(tmp_path, capsys):

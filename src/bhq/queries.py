@@ -202,14 +202,14 @@ def high_value_members(g: Graph) -> list[tuple[str, list[str], str]]:
     return sorted(out)
 
 
-def control_rows(g: Graph, sid: str, max_depth: int = 2) -> list[tuple[int, str, str, str]]:
+def control_rows(g: Graph, sid: str, max_depth: int | None = 2) -> list[tuple[int, str, str, str]]:
     """BFS outbound control+membership edges, retaining object identifiers."""
     seen = {sid}
     out = []
     frontier = deque([(sid, 0)])
     while frontier:
         cur, depth = frontier.popleft()
-        if depth >= max_depth:
+        if max_depth is not None and depth >= max_depth:
             continue
         edges = [(t, r) for (t, r) in g.control_edges.get(cur, [])]
         edges += [(gr, "MemberOf") for gr in g.member_edges.get(cur, [])]
@@ -221,7 +221,7 @@ def control_rows(g: Graph, sid: str, max_depth: int = 2) -> list[tuple[int, str,
     return out
 
 
-def controls(g: Graph, sid: str, max_depth: int = 2) -> list[tuple[int, str, str, str]]:
+def controls(g: Graph, sid: str, max_depth: int | None = 2) -> list[tuple[int, str, str, str]]:
     """Return (depth, from_name, edge_label, to_name) for existing callers."""
     return [(depth, g.name(frm), label, g.name(to))
             for depth, frm, label, to in control_rows(g, sid, max_depth)]

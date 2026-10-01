@@ -137,3 +137,44 @@ def route(g, start, goals, target_state='principal'):
             'status': 'candidate' if steps is not None else 'no-modeled-route',
             'limitations': ['Conditional investigation route, not a verified execution path.',
                             'No automatic AD CS or trust-boundary transitions; those require separate conditions.']}
+
+
+def reachable(g, start, goals):
+    """Traverse every modeled state once, retaining all observed transitions.
+
+    A predecessor supplies one minimum-hop explanation for each reached goal;
+    the edge list keeps alternate relationships instead of discarding them.
+    """
+    edges = defaultdict(list)
+    for row in relationships(g):
+        edges[(row['source']['id'], row['source_state'])].append(row)
+    initial = (start, 'principal')
+    queue, previous, distance = deque([initial]), {initial: None}, {initial: 0}
+    traversed = []
+    while queue:
+        state = queue.popleft()
+        for edge in edges[state]:
+            traversed.append(edge)
+            next_state = (edge['target']['id'], edge['target_state'])
+            if next_state not in previous:
+                previous[next_state] = (state, edge)
+                distance[next_state] = distance[state] + 1
+                queue.append(next_state)
+
+    states = [{'target': ref(g, sid), 'state': state, 'hops': distance[(sid, state)]}
+              for sid, state in previous if (sid, state) != initial]
+    goal_routes = []
+    for sid, reason in sorted(goals.items()):
+        state = (sid, 'principal')
+        if state not in previous:
+            continue
+        steps = []
+        while previous[state] is not None:
+            state, edge = previous[state]
+            steps.append(edge)
+        goal_routes.append({'target': ref(g, sid), 'reason': reason,
+                            'steps': list(reversed(steps))})
+    return {'start': ref(g, start), 'states': states, 'edges': traversed,
+            'goal_routes': goal_routes,
+            'limitations': ['Conditional transitions require the listed prerequisites.',
+                            'AD CS and trust-boundary transitions are not modeled.']}

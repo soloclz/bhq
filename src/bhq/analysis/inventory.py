@@ -1,6 +1,6 @@
 """Enumerate every observed field path, including new and raw-only fields."""
 from collections import defaultdict
-from .common import evidence
+from .common import evidence, ref
 
 # A field having an outlet does not mean every nested value is modeled.
 OUTLETS = {
@@ -103,3 +103,31 @@ def inventory(g):
     return {'fields': rows, 'unhandled_files': g.unhandled_files, 'unmodeled_ace_rights': unmodeled_rights,
             'limitations': ['query-outlet identifies a known field shape with a dedicated outlet, not a verified effective-access conclusion.',
                             'raw-only fields remain available through object; counts describe only loaded input.']}
+
+
+def populated_raw(g, coverage=None):
+    """Keep every populated leaf with no dedicated outlet and its exact location."""
+    coverage = coverage or inventory(g)
+    raw_fields = {(row['kind'], row['field']) for row in coverage['fields']
+                  if row['status'] == 'raw-only'}
+
+    def walk(value, field='', location=''):
+        if isinstance(value, dict):
+            for key, child in value.items():
+                yield from walk(child, f'{field}.{key}' if field else key,
+                                f'{location}.{key}' if location else key)
+        elif isinstance(value, list):
+            for index, child in enumerate(value):
+                yield from walk(child, field + '[]', f'{location}[{index}]')
+        elif value not in (None, '', False, 0):
+            yield field, location, value
+
+    rows = []
+    for obj in g.objects:
+        sid = obj['ObjectIdentifier']
+        kind = g.kind(sid)
+        for field, location, value in walk(obj):
+            if (kind, field) in raw_fields:
+                rows.append({'object': ref(g, sid), 'field': field, 'value': value,
+                             'evidence': evidence(g, sid, location)})
+    return rows

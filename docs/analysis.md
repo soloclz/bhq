@@ -1,4 +1,4 @@
-# Recorded data and conditional analysis (bhq 0.3)
+# Recorded data and conditional analysis (bhq 0.4)
 
 bhq is an offline analyzer. These commands read a saved collection; they do not
 connect to hosts, authenticate, change AD objects, or execute the routes shown.
@@ -8,7 +8,8 @@ legacy ACL/membership queries and report presentation.
 ## Start with the report, then query the relevant evidence
 
 ```sh
-bhq report ./collection --from alice --goal da
+bhq report ./collection --format md -o report.md
+bhq report ./collection --from alice --format md -o alice-report.md
 bhq sessions ./collection
 bhq access ./collection
 bhq policy ./collection
@@ -20,11 +21,20 @@ bhq route ./collection alice --goal da
 bhq route ./collection alice --to WS01.TEST.LOCAL --state host
 ```
 
-New commands accept `--format json` for complete records and source references.
-The report includes a compact overview and, with `--from`, a conditional route
-alongside the original `path` result. Its JSON includes complete `extended`
-analysis and `candidate_route`; the existing `path` key and semantics remain.
-`bhq object` also works on all six AD CS object types.
+These commands accept `--format json` for structured records and source references.
+The report includes all recorded ACL and membership edges, selected property clues,
+roasting and delegation settings, DCSync grant combinations, and populated local
+access, session, GPO, AD CS, and raw-only field material. `--from` adds all
+reachable control and membership edges, all reachable conditional state
+transitions, and one minimum-hop explanation for each reached high-value target.
+The explanation minimizes the number of recorded edges; it does not rank
+reliability or effort, and other relationships remain in the edge list. Cycles
+terminate after each object or typed state has been visited. `report` has no
+`--goal` option; `path`, `reachers`, and `route` retain it for focused queries.
+The JSON keeps `extended`, `path`, and `candidate_route` for existing consumers
+and adds complete `recorded_edges`, `raw_observations`, `control_reachability`,
+`goal_paths`, and `candidate_reachability`. `bhq object` works on all six AD CS
+object types.
 
 | Command | Analysis | What the result does not establish |
 |---|---|---|
@@ -140,8 +150,10 @@ sources. `not-observable` never means safe.
 Tests use synthetic fixtures with positive and negative controls. They check
 source provenance, status contradictions, missing/invalid fields, nested groups,
 route-state separation, inheritance blocking, CA/template grant separation,
-unresolved references and new nested fields. No real AD collection, upstream
-serializer execution or BloodHound CE ingestion comparison has been performed.
+unresolved references and new nested fields. A private RustHound-CE v2.5.20
+lab collection was used to check full report generation and selected
+`--from` traversal. Both workflows completed on the saved collection; route
+execution and BloodHound CE ingestion were not tested.
 
 Reviewed collector: RustHound-CE v2.5.12,
 `aeb28db95f0149a1579c2517536083e150ae2803`.

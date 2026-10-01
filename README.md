@@ -53,6 +53,7 @@ installing, run `PYTHONPATH=src python3 -m bhq --help` from the checkout.
 bhq objects ./collection --kind gpo
 bhq clues ./collection --kind user
 bhq object ./collection "ALICE@TEST.LOCAL"
+bhq report ./collection --format md -o report.md
 bhq report ./collection --from alice
 bhq report ./collection --from alice --format md -o report.md
 bhq report ./collection --format json -o report.json
@@ -119,10 +120,11 @@ References: [BloodHound JSON formats](https://bloodhound.specterops.io/integrati
 - **The goal set is broader than Domain Admins.** It includes selected well-known
   RIDs, principals with recorded domain-control or replication rights, and the
   named group `DnsAdmins`. Reaching a goal does not prove Domain Admin membership
-  or equivalent capability. `path`, `reachers`, and `report` default to the
-  explicit `high-value` goal. Use `--goal da` for loaded Domain Admins groups
-  identified by domain SID and RID 512. Reports include the selected goal and
-  endpoint reason; an existing goal is a valid zero-hop path.
+  or equivalent capability. `path`, `reachers`, and `route` default to the
+  explicit `high-value` goal; use `--goal da` to focus those commands on loaded
+  Domain Admins groups identified by domain SID and RID 512. `report` includes
+  both Domain Admins and other loaded investigation targets, with no `--goal`
+  option. An existing target is a valid zero-hop path.
 - **DCSync findings combine recorded grants per principal and domain.** Nested
   group membership and `PrimaryGroupSID` are included; cycles terminate without
   duplicating membership edges. Grants on different domains are never combined.
@@ -157,8 +159,8 @@ an ObjectIdentifier; principal-only commands retain their existing name lookup.
 attributes, plus selected flags (passwordnotreqd, trustedtoauth, admincount,
 haslaps, and enabled=false). It does not verify credentials or infer that a flag
 proves exploitability. Fields not selected remain available through `object`.
-Text/Markdown reports show the first five clue objects with a displayed count;
-`clues` and JSON reports retain all selected entries.
+Text, Markdown, and JSON reports retain all selected clue objects and their
+source files.
 
 ## Contributing
 
@@ -174,6 +176,18 @@ from negative findings when adding support for a collector or relationship.
 
 MIT. See [LICENSE](LICENSE).
 
+## Output changes in 0.4
+
+`report` no longer accepts `--goal`. It includes all loaded investigation targets,
+recorded ACL and membership edges, populated property clues, and the recorded
+access, session, GPO, AD CS, and raw-only field material with source locations.
+`--from` traverses the loaded control and membership graph until no new object is
+reachable. It retains every reachable relationship and gives one minimum-hop
+explanation per reached target. Conditional transitions are reported separately
+with their requirements. The JSON keys `recorded_edges`, `raw_observations`, and,
+with `--from`, `control_reachability`, `controls`, `goal_paths`, and
+`candidate_reachability` expose these materials. See [analysis](docs/analysis.md).
+
 ## Output additions in 0.3
 
 Reports add `extended` (sessions, access, SID history, user rights, policy, AD CS,
@@ -184,7 +198,8 @@ See [conditional model and limits](docs/analysis.md).
 
 ## Output changes in 0.2
 
-JSON reports replace the misleading `path_to_da` key with `path` and add `goal`.
+JSON reports replaced the misleading `path_to_da` key with `path` and added the
+then-current `goal` key, which was removed in 0.4.
 The Python `path_to_da()` helper now means Domain Admins specifically; use
 `path_to_goal()` for the default high-value target set. Reports add domain-scoped
 `dcsync_findings`, `property_clues`, `delegation.rbcd`, and `trusts`. Existing

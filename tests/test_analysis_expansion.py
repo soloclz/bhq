@@ -373,12 +373,25 @@ def test_route_cli_and_report_keep_old_path_separate(tmp_path, capsys):
     mutate(tmp_path, 'computers', lambda c: c[0].update(Sessions=session()))
     assert cli.main(['route', str(tmp_path), 'alice', '--goal', 'da', '--format', 'json']) == 0
     assert json.loads(capsys.readouterr().out)['status'] == 'candidate'
-    data = report.build(load(tmp_path), 'alice', 'da')
-    assert data['path']['path'] is None and data['candidate_route']['steps']
+    data = report.build(load(tmp_path), 'alice')
+    assert data['path']['path'][0]['name'] == 'alice' and data['candidate_route']['steps'] is not None
     assert data['extended']['sessions']
     for render in (report.as_text, report.as_md):
         output = render(data)
         assert 'Conditional route' in output and 'HasSession' in output
+
+
+def test_report_markdown_keeps_structured_policy_and_adcs_material(tmp_path):
+    _write(tmp_path)
+    make_policy(tmp_path)
+    make_pki(tmp_path)
+    data = report.build(load(tmp_path), 'bob')
+    md = report.as_md(data)
+    assert 'Recorded GPO and policy material' in md and '"requires":' in md
+    assert 'Recorded AD CS material' in md and '"registry":' in md
+    assert '"http_endpoints":' in md and '"settings":' in md
+    assert 'AD CS for selected identity' in md and '"enrollment":' in md
+    assert 't_enterprisecas.json' in md and 't_ous.json' in md
 
 
 def test_deleted_objects_do_not_form_conditional_routes(tmp_path):

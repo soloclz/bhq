@@ -1,6 +1,6 @@
 """`bhq` — offline BloodHound analysis CLI.
 
-    bhq report <path> [--from alice]     combined queries and collection limits
+    bhq report <path> [--from alice]     recorded material and reachable relations
     bhq path   <path> <from>               shortest recorded path -> selected targets
     bhq controls <path> <principal> [-d N] what a principal controls (N hops)
     bhq kerberoast <path>                  users with SPNs
@@ -58,7 +58,7 @@ def _resolve(g, name):
 
 
 def cmd_report(args):
-    out = report.render(_load(args), args.frm, fmt=args.format, goal=args.goal)
+    out = report.render(_load(args), args.frm, fmt=args.format)
     if args.output:
         with open(args.output, "w", encoding="utf-8") as fh:
             fh.write(out if out.endswith("\n") else out + "\n")
@@ -269,8 +269,7 @@ def build_parser() -> argparse.ArgumentParser:
         return s
 
     s = add("report", cmd_report, "combined AD analysis and collection limits")
-    s.add_argument("--from", dest="frm", help="starting principal for path and control queries")
-    s.add_argument("--goal", choices=["high-value", "da"], default="high-value")
+    s.add_argument("--from", dest="frm", help="starting principal for exhaustive relationship traversal")
     s.add_argument("--format", choices=["text", "md", "json"], default="text", help="output format (default text)")
     s.add_argument("-o", "--output", help="write to this file (for evidence) instead of stdout")
 
