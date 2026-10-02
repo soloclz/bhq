@@ -161,33 +161,31 @@ def _deleted_domain_grants(g: Graph) -> list[dict]:
     return sorted(rows, key=lambda row: (row['deleted']['name'], row['domain']['name']))
 
 
-def _trust_privileged_groups(g: Graph, trusts: list[dict], recorded_edges: list[dict]) -> list[dict]:
-    """Show loaded group SIDs for domains named by a recorded trust."""
-    domains = {row['source_id']: row['source'] for row in trusts}
-    for row in trusts:
-        trust = row['trust']
-        sid = trust.get('TargetDomainSid')
-        if sid:
-            domains.setdefault(sid, trust.get('TargetDomainName') or g.name(sid))
+def _admin_group_sids(g: Graph, recorded_edges: list[dict]) -> list[dict]:
+    """Show loaded Domain and Enterprise Admin groups independently of trusts."""
     rows = []
-    for domain_sid, domain_name in sorted(domains.items(), key=lambda item: item[1]):
-        for rid in (512, 519):
-            group_sid = f'{domain_sid}-{rid}'
-            if g.kind(group_sid) != 'group' or not g.is_live(group_sid):
-                continue
-            administrators = [
-                {'id': edge['to_id'], 'name': g.qualified_name(edge['to_id']),
-                 'evidence': edge['evidence']}
-                for edge in recorded_edges
-                if edge['from_id'] == group_sid and edge['edge'] == 'MemberOf'
-                and edge['to_kind'] == 'group' and edge['to_resolved']
-                and not edge['to_deleted'] and rid_of(edge['to_id']) == 544
-            ]
-            rows.append({'domain_id': domain_sid, 'domain': domain_name,
-                         'group_id': group_sid, 'group': g.qualified_name(group_sid), 'rid': rid,
-                         'source_file': g.object_sources.get(group_sid),
-                         'administrator_memberships': administrators})
-    return rows
+    for group in g.groups:
+        group_sid = group['ObjectIdentifier']
+        if (not re.fullmatch(r'S-1-5-21-\d+-\d+-\d+-(?:512|519)', group_sid)
+                or not g.is_live(group_sid)):
+            continue
+        domain_sid = group_sid.rsplit('-', 1)[0]
+        domain_name = g.qualified_name(domain_sid)
+        if domain_name == domain_sid:
+            domain_name = (group.get('Properties') or {}).get('domain') or domain_sid
+        administrators = [
+            {'id': edge['to_id'], 'name': g.qualified_name(edge['to_id']),
+             'evidence': edge['evidence']}
+            for edge in recorded_edges
+            if edge['from_id'] == group_sid and edge['edge'] == 'MemberOf'
+            and edge['to_kind'] == 'group' and edge['to_resolved']
+            and not edge['to_deleted'] and rid_of(edge['to_id']) == 544
+        ]
+        rows.append({'domain_id': domain_sid, 'domain': domain_name,
+                     'group_id': group_sid, 'group': g.qualified_name(group_sid),
+                     'rid': rid_of(group_sid), 'source_file': g.object_sources.get(group_sid),
+                     'administrator_memberships': administrators})
+    return sorted(rows, key=lambda row: (row['domain'], row['rid'], row['group_id']))
 
 
 def _deleted_principal_paths(g: Graph, goals: dict[str, str]) -> list[dict]:
@@ -274,7 +272,7 @@ def build(g: Graph) -> dict:
             or rid_of(str(obj.get('PrimaryGroupSID') or '')) == 516
         ],
         "trusts": trusts,
-        "trust_privileged_groups": _trust_privileged_groups(g, trusts, recorded_edges),
+        "admin_group_sids": _admin_group_sids(g, recorded_edges),
         "dcsync": queries.dcsync_principals(g),
         "dcsync_findings": queries.dcsync_findings(g),
         "high_value_groups": [
@@ -419,17 +417,21 @@ def _report_trust_finding(row: dict) -> str:
     direction = trust.get('TrustDirection')
     kind = trust.get('TrustType')
     description = f"{direction} {kind} trust" if direction is not None and kind else 'recorded trust'
-    return (f"{source} -> {target}: {description}; "
-            f"transitive={json.dumps(trust.get('IsTransitive'))}; "
-            f"SID filtering={json.dumps(trust.get('SidFilteringEnabled'))} "
-            f"[source: {row['source_file']}]")
+    facts = [description]
+    transitive = trust.get('IsTransitive')
+    if transitive is not None and not (transitive is True and kind == 'ParentChild'):
+        facts.append(f'transitive={json.dumps(transitive)}')
+    sid_filtering = trust.get('SidFilteringEnabled')
+    if sid_filtering is not None:
+        facts.append(f'SidFilteringEnabled={json.dumps(sid_filtering)}')
+    return f"{source} -> {target}: {'; '.join(facts)} [source: {row['source_file']}]"
 
 
-def _report_trust_group_finding(row: dict) -> str:
+def _report_admin_group_finding(row: dict) -> str:
     memberships = ', '.join(group['name'] for group in row['administrator_memberships'])
     context = f'; recorded MemberOf {memberships}' if memberships else ''
-    return (f"{row['domain']} group SID: {row['group']} [{row['group_id']}] "
-            f"(RID {row['rid']}){context} [source: {row['source_file']}]")
+    return (f"{row['group']} [{row['group_id']}] (RID {row['rid']})"
+            f"{context} [group source: {row['source_file']}]")
 
 
 def dcsync_finding(row: dict, replication_aces: list[dict] | None = None) -> str:
@@ -749,11 +751,14 @@ def _report_sections(data: dict) -> list[tuple[str, list[str] | ControlTree]]:
             'A recorded delegation setting identifies a boundary to verify; it does not establish a usable route.',
             *delegation_lines,
         ]))
+    if data['admin_group_sids']:
+        sections.append(('Domain and Enterprise Admin group SIDs', [
+            *[_report_admin_group_finding(row) for row in data['admin_group_sids']],
+        ]))
     if data['trusts']:
         sections.append(('Trust boundaries', [
-            'Trust traversal is not modeled; verify cross-domain access before treating this relationship as a route.',
+            'Trust traversal and PAC SID acceptance are not modeled; verify cross-domain access before treating this relationship as a route.',
             *[_report_trust_finding(row) for row in data['trusts']],
-            *[_report_trust_group_finding(row) for row in data['trust_privileged_groups']],
         ]))
     default_high_privilege_rids = {500, 512, 518, 519, 544}
     dc_ids = {row['id'] for row in data['domain_controllers']}

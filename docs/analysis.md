@@ -32,7 +32,12 @@ It omits empty session entries, GPO link-only scope expansion, empty high-value
 group lists, duplicate replication ACEs and paths from already privileged built-in
 principals. `Object control` shows selected ACL edges as a tree, with relevant
 group membership between ACL edges and source references below. Direct membership
-in a privileged group has its own short list. `ReadLAPSPassword` and AllowedToAct
+in a privileged group has its own short list. `Domain and Enterprise Admin group
+SIDs` lists loaded RID 512/519 group objects even when no trust is recorded, with
+any recorded membership in Administrators. `Trust boundaries` keeps domain SIDs,
+direction, type, nonroutine transitivity and the recorded `SidFilteringEnabled`
+field. The full trust fields remain in `bhq trusts` and JSON; [PAC SID filtering](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-pac/55fc19f2-55ba-4251-8a6a-103dd7c66280)
+also depends on the boundary and SID category. `ReadLAPSPassword` and AllowedToAct
 edges remain recorded but do not imply the computer-account identity in an ACL
 path. An unresolved `Enroll` trustee on a candidate template is shown by SID;
 the collection alone may not identify whether the principal was deleted or

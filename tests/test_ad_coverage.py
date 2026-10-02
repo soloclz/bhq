@@ -263,15 +263,12 @@ def test_trust_summary_preserves_source_direction_false_unknown_and_flags(tmp_pa
         arrow = ' -&gt; ' if fmt == 'md' else ' -> '
         assert f'TEST.LOCAL [{DOM}]{arrow}OTHER.LOCAL [S-1-5-21-40-50-60]' in rendered
         assert f'TEST.LOCAL [{DOM}]{arrow}UNKNOWN.LOCAL' in rendered
+        assert 'transitive=false' in rendered and 'SidFilteringEnabled=false' in rendered
+        assert 'transitive=null' not in rendered and 'SidFilteringEnabled=null' not in rendered
 
 
-def test_trust_report_shows_recorded_group_sids_and_administrators_membership(tmp_path):
+def test_report_shows_recorded_group_sids_without_trusts(tmp_path):
     _write(tmp_path)
-    domains = json.loads((tmp_path / 't_domains.json').read_text())['data']
-    domains[0]['Trusts'] = [
-        {'TargetDomainSid': 'S-1-5-21-40-50-60', 'TargetDomainName': 'CHILD.TEST.LOCAL',
-         'TrustDirection': 'Bidirectional', 'TrustType': 'ParentChild'}]
-    replace_collection(tmp_path, 'domains', domains)
     groups = json.loads((tmp_path / 't_groups.json').read_text())['data']
     enterprise_admins = f'{DOM}-519'
     administrators = 'TEST.LOCAL-S-1-5-32-544'
@@ -281,23 +278,39 @@ def test_trust_report_shows_recorded_group_sids_and_administrators_membership(tm
         {'ObjectIdentifier': administrators,
          'Properties': {'name': 'ADMINISTRATORS@TEST.LOCAL'},
          'Members': [{'ObjectIdentifier': DA}, {'ObjectIdentifier': enterprise_admins}]},
-        {'ObjectIdentifier': 'S-1-5-21-90-90-90-519',
-         'Properties': {'name': 'UNRELATED ENTERPRISE ADMINS'}, 'Members': []},
     ])
     replace_collection(tmp_path, 'groups', groups)
 
     data = report.build(load(tmp_path))
-    rows = data['trust_privileged_groups']
+    assert data['trusts'] == []
+    rows = data['admin_group_sids']
     assert {row['group_id'] for row in rows} == {DA, enterprise_admins}
     assert all(row['administrator_memberships'][0]['id'] == administrators for row in rows)
     assert all(row['administrator_memberships'][0]['evidence'][0]['source_file'] == 't_groups.json'
                for row in rows)
     for fmt in ('text', 'md'):
         rendered = report.RENDERERS[fmt](data)
+        assert 'Domain and Enterprise Admin group SIDs' in rendered
+        assert 'Trust boundaries' not in rendered
         assert f'DOMAIN ADMINS@TEST.LOCAL [{DA}] (RID 512)' in rendered
         assert f'ENTERPRISE ADMINS@TEST.LOCAL [{enterprise_admins}] (RID 519)' in rendered
         assert 'recorded MemberOf ADMINISTRATORS@TEST.LOCAL' in rendered
-        assert 'UNRELATED ENTERPRISE ADMINS' not in rendered
+
+
+def test_parent_child_transitivity_is_kept_in_data_but_not_repeated_in_summary(tmp_path):
+    _write(tmp_path)
+    domains = json.loads((tmp_path / 't_domains.json').read_text())['data']
+    domains[0]['Trusts'] = [
+        {'TargetDomainSid': 'S-1-5-21-40-50-60', 'TargetDomainName': 'CHILD.TEST.LOCAL',
+         'TrustDirection': 'Bidirectional', 'TrustType': 'ParentChild',
+         'IsTransitive': True, 'SidFilteringEnabled': False}]
+    replace_collection(tmp_path, 'domains', domains)
+    data = report.build(load(tmp_path))
+    assert data['trusts'][0]['trust']['IsTransitive'] is True
+    for fmt in ('text', 'md'):
+        rendered = report.RENDERERS[fmt](data)
+        assert 'transitive=true' not in rendered
+        assert 'SidFilteringEnabled=false' in rendered
 
 
 def test_empty_trust_and_rbcd_results_remain_scoped(tmp_path, capsys):
