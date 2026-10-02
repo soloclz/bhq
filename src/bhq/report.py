@@ -378,11 +378,16 @@ def trust_finding(row: dict) -> str:
 
 def _report_trust_finding(row: dict) -> str:
     trust = row['trust']
-    target = trust.get('TargetDomainName') or trust.get('TargetDomainSid') or '(unknown target)'
+    source = f"{row['source']} [{row['source_id']}]"
+    target_sid = trust.get('TargetDomainSid')
+    target_name = trust.get('TargetDomainName')
+    target = target_name or target_sid or '(unknown target)'
+    if target_name and target_sid:
+        target += f' [{target_sid}]'
     direction = trust.get('TrustDirection')
     kind = trust.get('TrustType')
     description = f"{direction} {kind} trust" if direction is not None and kind else 'recorded trust'
-    return (f"{row['source']} -> {target}: {description}; "
+    return (f"{source} -> {target}: {description}; "
             f"transitive={json.dumps(trust.get('IsTransitive'))}; "
             f"SID filtering={json.dumps(trust.get('SidFilteringEnabled'))} "
             f"[source: {row['source_file']}]")

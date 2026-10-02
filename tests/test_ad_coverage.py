@@ -259,7 +259,10 @@ def test_trust_summary_preserves_source_direction_false_unknown_and_flags(tmp_pa
     assert 'SidFilteringEnabled=false' in text and 'SidFilteringEnabled=null' in text
     assert 'TrustDirection=99' in text  # no guessed interpretation of unknown values
     for fmt in ('text', 'md'):
-        assert 'OTHER.LOCAL' in report.render(g, fmt=fmt)
+        rendered = report.render(g, fmt=fmt)
+        arrow = ' -&gt; ' if fmt == 'md' else ' -> '
+        assert f'TEST.LOCAL [{DOM}]{arrow}OTHER.LOCAL [S-1-5-21-40-50-60]' in rendered
+        assert f'TEST.LOCAL [{DOM}]{arrow}UNKNOWN.LOCAL' in rendered
 
 
 def test_empty_trust_and_rbcd_results_remain_scoped(tmp_path, capsys):
