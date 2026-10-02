@@ -161,6 +161,35 @@ def _deleted_domain_grants(g: Graph) -> list[dict]:
     return sorted(rows, key=lambda row: (row['deleted']['name'], row['domain']['name']))
 
 
+def _trust_privileged_groups(g: Graph, trusts: list[dict], recorded_edges: list[dict]) -> list[dict]:
+    """Show loaded group SIDs for domains named by a recorded trust."""
+    domains = {row['source_id']: row['source'] for row in trusts}
+    for row in trusts:
+        trust = row['trust']
+        sid = trust.get('TargetDomainSid')
+        if sid:
+            domains.setdefault(sid, trust.get('TargetDomainName') or g.name(sid))
+    rows = []
+    for domain_sid, domain_name in sorted(domains.items(), key=lambda item: item[1]):
+        for rid in (512, 519):
+            group_sid = f'{domain_sid}-{rid}'
+            if g.kind(group_sid) != 'group' or not g.is_live(group_sid):
+                continue
+            administrators = [
+                {'id': edge['to_id'], 'name': g.qualified_name(edge['to_id']),
+                 'evidence': edge['evidence']}
+                for edge in recorded_edges
+                if edge['from_id'] == group_sid and edge['edge'] == 'MemberOf'
+                and edge['to_kind'] == 'group' and edge['to_resolved']
+                and not edge['to_deleted'] and rid_of(edge['to_id']) == 544
+            ]
+            rows.append({'domain_id': domain_sid, 'domain': domain_name,
+                         'group_id': group_sid, 'group': g.qualified_name(group_sid), 'rid': rid,
+                         'source_file': g.object_sources.get(group_sid),
+                         'administrator_memberships': administrators})
+    return rows
+
+
 def _deleted_principal_paths(g: Graph, goals: dict[str, str]) -> list[dict]:
     """Find deleted grant holders that could reach a live goal if their SID is usable.
 
@@ -226,6 +255,8 @@ def _deleted_principal_paths(g: Graph, goals: dict[str, str]) -> list[dict]:
 def build(g: Graph) -> dict:
     targets = queries.goal_sids(g, 'high-value')
     da_targets = queries.goal_sids(g, 'da')
+    trusts = queries.trusts(g)
+    recorded_edges = _all_recorded_edges(g)
     data: dict = {
         "collection": queries.coverage(g),
         "analysis": {
@@ -242,7 +273,8 @@ def build(g: Graph) -> dict:
             if (obj.get('Properties') or {}).get('isdc') is True
             or rid_of(str(obj.get('PrimaryGroupSID') or '')) == 516
         ],
-        "trusts": queries.trusts(g),
+        "trusts": trusts,
+        "trust_privileged_groups": _trust_privileged_groups(g, trusts, recorded_edges),
         "dcsync": queries.dcsync_principals(g),
         "dcsync_findings": queries.dcsync_findings(g),
         "high_value_groups": [
@@ -252,7 +284,7 @@ def build(g: Graph) -> dict:
         "account_settings": _account_settings(g),
         "account_findings": _account_findings(g),
         "replication_aces": _replication_aces(g),
-        "recorded_edges": _all_recorded_edges(g),
+        "recorded_edges": recorded_edges,
         "targets": [{'id': sid, 'name': g.name(sid), 'kind': g.kind(sid),
                      'reason': reason, 'domain_admins': sid in da_targets}
                     for sid, reason in sorted(targets.items())],
@@ -391,6 +423,13 @@ def _report_trust_finding(row: dict) -> str:
             f"transitive={json.dumps(trust.get('IsTransitive'))}; "
             f"SID filtering={json.dumps(trust.get('SidFilteringEnabled'))} "
             f"[source: {row['source_file']}]")
+
+
+def _report_trust_group_finding(row: dict) -> str:
+    memberships = ', '.join(group['name'] for group in row['administrator_memberships'])
+    context = f'; recorded MemberOf {memberships}' if memberships else ''
+    return (f"{row['domain']} group SID: {row['group']} [{row['group_id']}] "
+            f"(RID {row['rid']}){context} [source: {row['source_file']}]")
 
 
 def dcsync_finding(row: dict, replication_aces: list[dict] | None = None) -> str:
@@ -714,6 +753,7 @@ def _report_sections(data: dict) -> list[tuple[str, list[str] | ControlTree]]:
         sections.append(('Trust boundaries', [
             'Trust traversal is not modeled; verify cross-domain access before treating this relationship as a route.',
             *[_report_trust_finding(row) for row in data['trusts']],
+            *[_report_trust_group_finding(row) for row in data['trust_privileged_groups']],
         ]))
     default_high_privilege_rids = {500, 512, 518, 519, 544}
     dc_ids = {row['id'] for row in data['domain_controllers']}
