@@ -184,8 +184,10 @@ loaded investigation targets using reverse graph traversal. A separate typed
 reverse traversal gives one minimum-transition conditional route per principal
 to the high-value and Domain Admins target sets. Text and Markdown show
 interpreted leads, including selected control edges, credential-related text,
-Kerberos account leads, and notable ACEs whose principal is deleted or missing
-from the collection. They omit low-signal listings: empty session results,
+Kerberoastable and AS-REP roastable candidates, and notable ACEs whose principal
+is deleted or missing from the collection. Both Kerberos sections remain visible
+when no candidates are identified in the saved collection. They omit low-signal
+listings: empty session results,
 link-only GPO scope expansions, empty privileged-group member lists, duplicate
 replication ACEs, and paths that start from already privileged built-in
 principals. Direct membership in a privileged group is shown separately from

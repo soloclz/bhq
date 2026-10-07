@@ -727,15 +727,24 @@ def _report_sections(data: dict) -> list[tuple[str, list[str] | ControlTree]]:
             'Recorded text matched credential terms or populated password fields; confirm the value and context.',
             *credential_text,
         ]))
-    if data['account_findings']:
-        sections.append(('Kerberos account leads', [
-            f"{row['account']['name']} [{row['account']['id']}] "
-            f"(enabled={row['enabled']}, admincount={row['admincount']}): "
-            + '; '.join(f"{signal['explanation']}"
-                        f" ({signal['field']}={json.dumps(signal['value'], ensure_ascii=False)})"
-                        f" [source: {_proof(signal['evidence'])}]"
-                        for signal in row['signals'])
-            for row in data['account_findings']
+    for title, fields in (
+        ('Kerberoastable candidates', {'hasspn', 'serviceprincipalnames'}),
+        ('AS-REP roastable candidates', {'dontreqpreauth'}),
+    ):
+        account_lines = []
+        for row in data['account_findings']:
+            signals = [signal for signal in row['signals'] if signal['field'] in fields]
+            if signals:
+                account_lines.append(
+                    f"{row['account']['name']} [{row['account']['id']}] "
+                    f"(enabled={row['enabled']}, admincount={row['admincount']}): "
+                    + '; '.join(f"{signal['explanation']}"
+                                f" ({signal['field']}={json.dumps(signal['value'], ensure_ascii=False)})"
+                                f" [source: {_proof(signal['evidence'])}]"
+                                for signal in signals)
+                )
+        sections.append((title, account_lines or [
+            'No candidates identified in the saved collection.',
         ]))
 
     delegation = data['delegation']
