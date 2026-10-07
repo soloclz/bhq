@@ -57,7 +57,7 @@ def _resolve(g, name):
 
 
 def cmd_report(args):
-    out = report.render(_load(args), fmt=args.format)
+    out = report.render(_load(args), fmt=args.format, output_path=args.output)
     if args.output:
         with open(args.output, "w", encoding="utf-8") as fh:
             fh.write(out if out.endswith("\n") else out + "\n")

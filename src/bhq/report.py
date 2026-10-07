@@ -8,9 +8,13 @@ is the terminal default.
 from __future__ import annotations
 
 import json
+import os
 import re
 from collections import defaultdict, deque
 from dataclasses import dataclass
+from pathlib import Path
+from urllib.parse import quote
+from uuid import uuid4
 
 from . import queries
 from .loader import CONTROL_RIGHTS, DCSYNC_RIGHTS, WELL_KNOWN_HIGH_VALUE_RIDS, Graph, rid_of
@@ -880,8 +884,55 @@ def as_text(data: dict) -> str:
     return '\n'.join(lines).rstrip() + '\n'
 
 
-def as_md(data: dict) -> str:
+def _source_links(g: Graph, output_path: str | os.PathLike | None) -> dict[str, str]:
     from html import escape
+
+    if g.source_root is None and g.source_archive is None:
+        return {}
+    base = Path(output_path).resolve().parent if output_path is not None else None
+    links = {}
+    for source in sorted(set(g.object_sources.values())):
+        target = g.source_archive if g.source_archive is not None else g.source_root / source
+        path = os.path.relpath(target, base) if base is not None else os.fspath(target)
+        label = g.source_archive.name if g.source_archive is not None else source
+        label = re.sub(r'([\\`*_\[\]])', r'\\\1', escape(label, quote=False))
+        links[source] = f'[{label}]({quote(path, safe="/")})'
+        if g.source_archive is not None:
+            delimiter = '`' * (1 + max((len(run) for run in re.findall(r'`+', source)), default=0))
+            member = source
+            if source.startswith(('`', ' ')) or source.endswith(('`', ' ')):
+                member = f' {member} '
+            links[source] += f' member: {delimiter}{member}{delimiter}'
+    return links
+
+
+def as_md(data: dict, *, source_links: dict[str, str] | None = None) -> str:
+    from html import escape
+
+    replacements = {}
+    if source_links:
+        # Mark structured source fields; insert links after escaping recorded text.
+        prefix = f'BHQ_SOURCE_{uuid4().hex}_'
+        tokens = {source: f'{prefix}{index}__' for index, source in enumerate(source_links)}
+        replacements = {tokens[source]: markup for source, markup in source_links.items()}
+
+        def mark_sources(value):
+            if isinstance(value, dict):
+                return {key: tokens[item] if key == 'source_file' and isinstance(item, str)
+                        and item in tokens else mark_sources(item)
+                        for key, item in value.items()}
+            if isinstance(value, list):
+                return [mark_sources(item) for item in value]
+            return value
+
+        data = mark_sources(data)
+    source_pattern = re.compile('|'.join(map(re.escape, replacements))) if replacements else None
+
+    def markdown_line(item):
+        line = escape(item.replace('\n', '\\n'), quote=False)
+        if source_pattern is not None:
+            line = source_pattern.sub(lambda match: replacements[match.group()], line)
+        return line
 
     lines = ['# BloodHound offline analysis', '']
     for title, entries in _report_sections(data):
@@ -890,10 +941,9 @@ def as_md(data: dict) -> str:
             lines.extend(['```text', *entries.graph, '```'])
             if entries.notes:
                 lines.append('')
-                lines.extend('- ' + escape(item, quote=False) for item in entries.notes)
+                lines.extend('- ' + markdown_line(item) for item in entries.notes)
         else:
-            lines.extend('- ' + escape(item.replace('\n', '\\n'), quote=False)
-                         for item in entries)
+            lines.extend('- ' + markdown_line(item) for item in entries)
         lines.append('')
     return '\n'.join(lines).rstrip() + '\n'
 
@@ -905,5 +955,7 @@ def as_json(data: dict) -> str:
 RENDERERS = {"text": as_text, "md": as_md, "json": as_json}
 
 
-def render(g: Graph, fmt: str = "text") -> str:
+def render(g: Graph, fmt: str = "text", *, output_path: str | os.PathLike | None = None) -> str:
+    if fmt == 'md':
+        return as_md(build(g), source_links=_source_links(g, output_path))
     return RENDERERS[fmt](build(g))

@@ -17,6 +17,9 @@ hard-coded name list nor a membership-based audit sees it, while its recorded re
 from __future__ import annotations
 
 import json
+from pathlib import Path
+import re
+from urllib.parse import unquote
 import zipfile
 
 import pytest
@@ -364,6 +367,105 @@ def test_report_formats(tmp_path):
                for w in data["analysis"]["warnings"])
 
 
+def _markdown_links(markdown):
+    return [unquote(target.strip('<>'))
+            for target in re.findall(r'\]\(([^)\n]+)\)', markdown)]
+
+
+def test_report_markdown_cli_resolves_sources_from_output_directory(tmp_path, monkeypatch):
+    collection = tmp_path / 'recorded (lab) #1'
+    raw = collection / 'nested [raw]'
+    raw.mkdir(parents=True)
+    _write(raw)
+    users = raw / 'round (1) #1_users.json'
+    (raw / 't_users.json').rename(users)
+    destination = tmp_path / 'reports (review)'
+    destination.mkdir()
+    output = destination / 'analysis.md'
+    monkeypatch.chdir(tmp_path)
+
+    assert cli.main(['report', str(collection.relative_to(tmp_path)), '--format', 'md',
+                     '-o', str(output.relative_to(tmp_path))]) == 0
+    markdown = output.read_text()
+    targets = _markdown_links(markdown)
+    assert targets
+    assert all(not Path(target).is_absolute() for target in targets)
+    monkeypatch.chdir(destination)
+    resolved = {Path(target).resolve() for target in targets}
+    assert resolved == {path.resolve() for path in raw.glob('*.json')}
+    assert all(path.is_file() for path in resolved)
+
+
+def test_report_markdown_zip_links_survive_temporary_extraction(tmp_path):
+    collection = tmp_path / 'source'
+    collection.mkdir()
+    _write(collection)
+    archive_path = tmp_path / 'raw collection (1) #1.zip'
+    prefix = 'outer [raw]&<review>/inner (capture)'
+    with zipfile.ZipFile(archive_path, 'w') as archive:
+        for source in collection.glob('*.json'):
+            archive.write(source, f'{prefix}/{source.name}')
+    destination = tmp_path / 'reports'
+    destination.mkdir()
+    output = destination / 'analysis.md'
+
+    assert cli.main(['report', str(archive_path), '--format', 'md', '-o', str(output)]) == 0
+    markdown = output.read_text()
+    targets = _markdown_links(markdown)
+    assert targets
+    assert {(destination / target).resolve() for target in targets} == {archive_path.resolve()}
+    assert archive_path.is_file()
+    assert f'`{prefix}/t_users.json`' in markdown
+    assert f'`{prefix}/t_groups.json`' in markdown
+
+
+def test_report_markdown_links_control_notes_without_changing_other_formats(tmp_path):
+    _write(tmp_path)
+    users_file = tmp_path / 't_users.json'
+    users = json.loads(users_file.read_text())
+    description = f'password reference [source: t_users.json:{BOB}:Aces[0]]'
+    users['data'][0]['Properties']['description'] = description
+    users_file.write_text(json.dumps(users))
+    graph = load(tmp_path)
+    data = report.build(graph)
+    original_json = report.as_json(data)
+    original_text = report.as_text(data)
+    links = {source.name: f'[{source.name}](raw/{source.name})'
+             for source in tmp_path.glob('*.json')}
+    markdown = report.as_md(data, source_links=links)
+    object_control = markdown.split('## Object control\n', 1)[1].split('\n## ', 1)[0]
+    fenced_graph, notes = object_control.split('```text\n', 1)[1].split('\n```', 1)
+
+    assert 'ForceChangePassword → bob' in fenced_graph
+    assert '](' not in fenced_graph
+    assert _markdown_links(notes)
+    assert 'Aces[0]' in notes.replace(r'\[', '[').replace(r'\]', ']')
+    credential_text = markdown.split('## Potential credential text\n', 1)[1].split('\n## ', 1)[0]
+    assert description in credential_text
+    assert _markdown_links(credential_text) == ['raw/t_users.json']
+    assert report.as_json(data) == original_json
+    assert report.as_text(data) == original_text
+    assert _markdown_links(report.as_md(data)) == []
+
+
+def test_report_markdown_distinguishes_nested_sources_with_same_basename(tmp_path):
+    _write(tmp_path)
+    users_path = tmp_path / 't_users.json'
+    users = json.loads(users_path.read_text())['data']
+    users_path.unlink()
+    for directory, rows in [('first', users[:1]), ('second', users[1:])]:
+        nested = tmp_path / directory
+        nested.mkdir()
+        (nested / 't_users.json').write_text(json.dumps({'data': rows}))
+    output = tmp_path / 'analysis.md'
+    markdown = report.render(load(tmp_path), fmt='md', output_path=output)
+    user_targets = {(output.parent / target).resolve()
+                    for target in _markdown_links(markdown) if target.endswith('t_users.json')}
+
+    assert user_targets == {(tmp_path / 'first/t_users.json').resolve(),
+                            (tmp_path / 'second/t_users.json').resolve()}
+
+
 def test_report_keeps_anomalous_leads_without_routine_directory_baseline(tmp_path):
     _write(tmp_path)
     builtin = 'TEST.LOCAL-S-1-5-32-544'
@@ -427,8 +529,9 @@ def test_report_tree_keeps_multistep_object_relationships(tmp_path):
     users_file.write_text(json.dumps(users))
     md = report.render(load(tmp_path), fmt='md')
     assert 'alice\n└── ForceChangePassword → bob [1]\n    └── GenericWrite → carol [2]' in md
-    assert '[1] bob [user]: Source: t_users.json' in md
-    assert '[2] carol [user]: Source: t_users.json' in md
+    for prefix in ['- [1] bob [user]: Source: ', '- [2] carol [user]: Source: ']:
+        note = next(line for line in md.splitlines() if line.startswith(prefix))
+        assert [Path(target).resolve() for target in _markdown_links(note)] == [users_file.resolve()]
 
 
 def test_laps_read_does_not_become_computer_identity(tmp_path):

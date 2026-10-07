@@ -122,6 +122,8 @@ class Graph:
         self.objects: list[dict] = []
         self.by_sid: dict[str, dict] = {}
         self.object_sources: dict[str, str] = {}
+        self.source_root: Path | None = None
+        self.source_archive: Path | None = None
         self._name: dict[str, str] = {}
         self._kind: dict[str, str] = {}
         self._aliases: dict[str, set[str]] = {}
@@ -299,7 +301,10 @@ def load(path: str) -> Graph:
     if path.lower().endswith(".zip") or (os.path.isfile(path) and zipfile.is_zipfile(path)):
         with TemporaryDirectory() as tmp:
             _extract_zip(path, tmp)
-            return _load_dir(tmp)
+            g = _load_dir(tmp)
+            g.source_root = None
+            g.source_archive = Path(path).resolve()
+            return g
     if not os.path.isdir(path):
         raise CollectionError(f"collection must be a directory or ZIP: {path}")
     return _load_dir(path)
@@ -307,6 +312,7 @@ def load(path: str) -> Graph:
 
 def _load_dir(path: str) -> Graph:
     g = Graph()
+    g.source_root = Path(path).resolve()
     buckets: dict[str, list[dict]] = {t: [] for t in OBJECT_TYPES}
     seen: dict[str, tuple[str, str]] = {}
     found = False

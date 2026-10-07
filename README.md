@@ -193,9 +193,16 @@ replication ACEs, and paths that start from already privileged built-in
 principals. Direct membership in a privileged group is shown separately from
 paths into that group. `Object control` draws selected recorded ACL relationships
 as a tree, connects membership where it explains a later ACL edge, and places
-interpretation and source locations below the tree. A `ReadLAPSPassword` edge
-remains visible there but is not treated as acquiring the computer-account
-identity for path traversal. An unresolved `Enroll` trustee on an AD CS template
+interpretation and source locations below the tree.
+
+Markdown source links open the original JSON file. With `-o`, links are relative
+to the report file; Markdown written to stdout uses absolute local paths. ZIP
+sources link to the original archive and retain the JSON member name beside the
+link. Object IDs and field names remain visible as record locators.
+
+A `ReadLAPSPassword` edge remains visible there but is not treated as acquiring
+the computer-account identity for path traversal. An unresolved `Enroll` trustee
+on an AD CS template
 candidate is called out by SID for follow-up. These omissions do not establish
 that an ACL or GPO has its default configuration; the collection has no baseline
 comparison or GPO content.
