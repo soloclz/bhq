@@ -1,36 +1,12 @@
 # bhq — offline BloodHound analyzer
 
-Query BloodHound collector JSON from the terminal without running a database or
-BloodHound GUI. `bhq` reads a directory of JSON files or a ZIP archive. It does not
-collect from AD, authenticate to hosts, crack passwords, or execute the paths it
-prints.
-
-## Questions and commands
-
-| Question | Command |
-|---|---|
-| What objects and recorded property clues are available? | `bhq objects` / `bhq object` / `bhq clues` |
-| Which accounts have SPNs or do not require Kerberos pre-authentication? | `bhq kerberoast` / `bhq asrep` |
-| What ACL and group-membership paths start at this principal? | `bhq path` / `bhq controls` |
-| What local admin or remote-access relationships were collected? | `bhq local` |
-| What delegation settings and replication rights were recorded? | `bhq deleg` / `bhq dcsync` |
-| What trust configuration was recorded for each domain? | `bhq trusts` |
-| Which ESC conditions are visible for this principal? | `bhq adcs --from <principal>` |
-| Which principals can reach the configured high-value set? | `bhq reachers` |
-
-Each command takes the collection path first. `report` combines these queries.
-Results are leads for validation, not proof that an account can be compromised or
-that a printed path can be executed.
-
-Additional recorded data: `sessions`, `access`, `policy`, `sid-history`,
-`user-rights`, and `adcs --from <principal>`. `coverage --raw-only` lists fields
-without a dedicated query outlet. `route` joins conditional relationships with
-separate account/object/host states and evidence per transition.
-See [analysis and examples](docs/analysis.md).
+`bhq` reads BloodHound collector JSON from a directory or ZIP archive and shows
+recorded AD objects, relationships, and investigation leads without a database or
+GUI. It does not connect to AD or execute the paths it finds.
 
 ## Install
 
-Python 3.10 or newer is required. There are no runtime dependencies.
+Requires Python 3.10 or newer. There are no runtime dependencies.
 
 ```sh
 git clone https://github.com/soloclz/bhq.git
@@ -39,212 +15,59 @@ pipx install .
 bhq --help
 ```
 
-After updating this checkout with `git pull --ff-only`, run `pipx reinstall bhq`
-to refresh the installed copy. A normal pipx install does not read subsequent
-source edits automatically. If the command is not on PATH, run `pipx ensurepath`
-and open a new terminal.
+After updating the checkout, run `pipx reinstall bhq` to refresh the installed
+command.
 
-For development, use `uv sync --extra dev`, then `uv run pytest -q`. Without
-installing, run `PYTHONPATH=src python3 -m bhq --help` from the checkout.
+## Quick start
 
-## Usage
+Put one collection snapshot under `collections/`, which Git ignores. Replace
+`lab` and the example principal with your collection and account. All test
+fixtures in this repository are synthetic.
 
 ```sh
 mkdir -p reports
-bhq objects ./collection --kind gpo
-bhq clues ./collection --kind user
-bhq object ./collection "ALICE@TEST.LOCAL"
-bhq report ./collection --format md -o reports/report.md
-bhq report ./collection --format json -o reports/report.json
-bhq path ./collection.zip alice --goal da
-bhq controls ./collection "SRVADMINS@TEST.LOCAL" -d 3
-bhq controls ./collection "alice@TEST.LOCAL" -d 3 --details
-bhq members ./collection "DOMAIN ADMINS@TEST.LOCAL"
-bhq local ./collection alice
-bhq deleg ./collection
-bhq trusts ./collection
-bhq dcsync ./collection
-bhq reachers ./collection
-bhq adcs ./collection --from alice --format md -o reports/adcs-alice.md
+bhq report ./collections/lab --format md -o reports/report.md
+bhq objects ./collections/lab --kind user
+bhq path ./collections/lab "ALICE@TEST.LOCAL" --goal da
 ```
 
-Keep each collection snapshot in a separate directory. Duplicate object IDs are
-rejected, but non-overlapping snapshots cannot reliably be distinguished. Use a
-qualified principal name or SID when a short name is ambiguous across domains.
-All fixtures in `tests/` are synthetic; no engagement collection is included.
+`report` selects findings for review; use `--format json` for structured results.
+Generated files under `reports/` are ignored by Git.
 
-## Compatibility and validation
+## Commands
 
-| Input | Current evidence |
+| Question | Commands |
 |---|---|
-| Legacy local-group fields (`LocalAdmins`, `RemoteDesktopUsers`, etc.) | Synthetic fixtures exercise loading and queries |
-| CE `LocalGroups` layout | Synthetic fixtures exercise all four local-access mappings and failure reporting |
-| SharpHound / bloodhound-python / bloodhound-ce-python | Intended input families; no version-pinned end-to-end compatibility matrix yet |
-| RustHound-CE v2.5.12 | Source reviewed at a pinned commit; reduced synthetic fixtures exercise metadata, core queries, delegation targets, and unsupported-data warnings. Live collection remains unverified. See [details](docs/rusthound-ce.md). |
-| RustHound-CE v2.5.20 | Source review of the builtin group collision rule; synthetic cases and a private Kali dump confirm `coverage` and Markdown `report` load all seven duplicate builtin pairs. Other collection fields are not covered by a version-pinned end-to-end matrix. See [details](docs/rusthound-ce.md). |
+| What objects, properties, and fields were recorded? | `objects`, `object`, `clues`, `coverage` |
+| What account leads and group members were recorded? | `kerberoast`, `asrep`, `members` |
+| What can a principal control or reach? | `path`, `controls`, `reachers`, `route` |
+| What AD configuration and grants were recorded? | `deleg`, `dcsync`, `trusts`, `adcs` |
+| What host access, sessions, and policy data were recorded? | `local`, `access`, `sessions`, `policy`, `user-rights`, `sid-history` |
 
-The loader uses filenames and object fields to select data. When `meta` is
-present, its type and count must agree with the file; declared collector, schema,
-and methods are retained in JSON reports and shown by `coverage`.
-Unverified schema versions produce a warning. This is not complete schema
-validation or proof of collection completeness. Users, groups, computers, domains, GPOs, OUs, containers and six AD CS object
-types are loaded; other JSON filenames are reported as not analyzed. Empty or missing metadata does not identify the collector.
+Each command takes the collection path first. Run `bhq <command> --help` for its
+options. Use a qualified name or SID when a short name matches more than one
+object.
 
-References: [BloodHound JSON formats](https://bloodhound.specterops.io/integrations/bloodhound-api/json-formats),
-[RustHound-CE](https://github.com/g0h4n/RustHound-CE).
+## Read the results
 
-## Interpretation limits
+`path` follows recorded ACL and group-membership relationships; `route` joins
+conditional account, object, and host transitions. Neither establishes current
+effective access. `path` and `reachers` default to the `high-value` goal;
+`route` defaults to `da`. Specify `--goal` when the distinction matters.
 
-- **`path` uses ACL object-control and group-membership edges.** `route` is a
-  separate conditional model that can join confirmed local-group observations,
-  recorded sessions, resolved delegation/RBCD, SID-history grants and candidate
-  policy effects. Every transition has source evidence and unmet requirements;
-  computer-account control is distinct from host administration. Reports keep
-  both results. Empty results do not establish the absence of a route.
-- **A path is not an execution plan.** Object type, effective permissions,
-  authentication requirements, and environmental preconditions are not evaluated
-  for each edge. Rights such as `GenericWrite` do not mean the same operation is
-  available on every target.
-- **Delegation target objects are not SPNs.** `delegation.constrained[].to`
-  retains raw `Properties.allowedtodelegate` values; `targets` separately reports
-  `AllowedToDelegate` object IDs, names, types, and whether they resolve in the
-  loaded collection. Target objects do not establish a service name or port.
-  `delegation.rbcd` lists configured `AllowedToAct` principals for each target;
-  it does not prove control of those principals. `route` can use this configuration
-  as a conditional transition with explicit prerequisites.
-- **Trust direction is relative to the source domain.** `trusts` preserves the
-  collector's field names and values; false stays false and unrecorded fields
-  display as null. A trust record does not verify connectivity, authentication,
-  selective authentication, or permission to access resources across that trust.
-- **The goal set is broader than Domain Admins.** It includes selected well-known
-  RIDs, principals with recorded domain-control or replication rights, and the
-  named group `DnsAdmins`. Reaching a goal does not prove Domain Admin membership
-  or equivalent capability. `path`, `reachers`, and `route` default to the
-  explicit `high-value` goal; use `--goal da` to focus those commands on loaded
-  Domain Admins groups identified by domain SID and RID 512. `report` includes
-  both Domain Admins and other loaded investigation targets, with no `--goal`
-  option. An existing target is a valid zero-hop path.
-- **DCSync findings combine recorded grants per principal and domain.** Nested
-  group membership and `PrimaryGroupSID` are included; cycles terminate without
-  duplicating membership edges. Grants on different domains are never combined.
-  `dcsync_findings` retains the domain, granting principals, and membership paths.
-  Deny ACEs, token restrictions, and missing membership data are not evaluated;
-  these findings are not a live effective-access check.
-- **Local-access counts are evidence summaries.** `attempted` counts records
-  marked `Collected`; `answered` counts records with members. Neither is a
-  packet-level observation. Missing records, explicit failures, and empty
-  results require different interpretation; an empty result without a failure
-  reason can remain ambiguous. Group membership does not prove a successful
-  RDP, WinRM, DCOM, or administrative login.
-
-Reports include collection warnings and a machine-readable analysis scope.
-These limitations also apply when a report contains no runtime warnings.
-
-## Objects and property clues
-
-`controls --details` keeps the relationship graph first, then lists each distinct
-control-edge target with its object type, recorded DN, and ObjectIdentifier.
-Numbered references tie graph edges to those exact objects; `MemberOf` targets
-are not repeated in the detail list. A missing DN is reported as not recorded,
-not inferred from the display name. Without `--details`, `controls` output is
-unchanged.
-
-`objects` lists identifiers and names; `--kind` limits the object type and
-`--match` filters names or IDs by substring. `object` returns one complete raw
-record as JSON, with its source filename. If a group and OU share a name, use
-an ObjectIdentifier; principal-only commands retain their existing name lookup.
-
-`clues` selects nonempty description/info, home/script/profile paths and password
-attributes, plus selected flags (passwordnotreqd, trustedtoauth, admincount,
-haslaps, and enabled=false). It does not verify credentials or infer that a flag
-proves exploitability. Fields not selected remain available through `object`.
-`clues` and JSON reports retain all selected clue objects and their source
-files. Text and Markdown reports show populated password fields and
-description/info text containing credential terms. Other nonempty text remains
-available through `clues` and `object`.
+See [analysis and interpretation](docs/analysis.md) for report fields, evidence,
+and limits. [RustHound-CE compatibility](docs/rusthound-ce.md) records the reviewed
+versions and validation. SharpHound, bloodhound-python, and
+bloodhound-ce-python are intended input families without a version-pinned
+end-to-end compatibility check.
 
 ## Contributing
 
-Use synthetic fixtures when reporting a bug. Include the collector version,
-collection methods, relevant JSON shape, expected result, and observed result.
-Do not submit real collections, credentials, or engagement reports.
-
-`src/bhq/loader.py` normalizes input, `queries.py` performs analysis, and
-`report.py` / `cli.py` present results. Keep collection failures distinguishable
-from negative findings when adding support for a collector or relationship.
+For bugs, use synthetic fixtures and include the collector version, collection
+methods, relevant JSON shape, expected result, and observed result. Do not
+submit real collections, credentials, or engagement reports. For development,
+run `uv sync --extra dev` and `uv run pytest -q`.
 
 ## License
 
 MIT. See [LICENSE](LICENSE).
-
-## Report output in 0.5.2
-
-`report` analyzes the collection globally; it no longer accepts `--from` or
-`--goal`. It finds every principal with a recorded ACL/membership path to the
-loaded investigation targets using reverse graph traversal. A separate typed
-reverse traversal gives one minimum-transition conditional route per principal
-to the high-value and Domain Admins target sets. Text and Markdown show
-interpreted leads, including selected control edges, credential-related text,
-Kerberoastable and AS-REP roastable candidates, and notable ACEs whose principal
-is deleted or missing from the collection. Both Kerberos sections remain visible
-when no candidates are identified in the saved collection. They omit low-signal
-listings: empty session results,
-link-only GPO scope expansions, empty privileged-group member lists, duplicate
-replication ACEs, and paths that start from already privileged built-in
-principals. Direct membership in a privileged group is shown separately from
-paths into that group. `Object control` draws selected recorded ACL relationships
-as a tree, connects membership where it explains a later ACL edge, and places
-interpretation and source locations below the tree.
-
-Markdown source links open the original JSON file. With `-o`, links are relative
-to the report file; Markdown written to stdout uses absolute local paths. ZIP
-sources link to the original archive and retain the JSON member name beside the
-link. Object IDs and field names remain visible as record locators.
-
-A `ReadLAPSPassword` edge remains visible there but is not treated as acquiring
-the computer-account identity for path traversal. An unresolved `Enroll` trustee
-on an AD CS template
-candidate is called out by SID for follow-up. These omissions do not establish
-that an ACL or GPO has its default configuration; the collection has no baseline
-comparison or GPO content.
-JSON retains `recorded_edges`, `property_clues`, `account_settings`,
-`raw_observations`, `conditional_reachers`, `conditional_da_reachers`,
-`deleted_reachers`, `deleted_da_reachers`, and `deleted_domain_grants`, with
-source locations and transition prerequisites. Query an identity with `path`,
-`controls`, `route`, or `adcs --from`. Deleted objects remain in recorded JSON
-but do not supply active principal reachability. The report identifies deleted
-principals whose recorded ACEs or former membership lead to an important target,
-plus deleted principals with a direct replication grant combination or control
-ACE on a live domain object. It also shows recorded inbound control and live
-SID-history carriers. SID history
-can supply an ACE grant, subject to token and filtering checks; it does not
-restore the old account or inherit its group membership. See [analysis](docs/analysis.md).
-
-## Output additions in 0.3
-
-Version 0.3 added `extended` (sessions, access, SID history, user rights, policy,
-AD CS, field coverage) and selected-principal `candidate_route`. The latter and
-the selected-principal `path` report keys were removed in 0.5; use `route` and
-`path` for focused queries. CLI commands accept `--format json`.
-See [conditional model and limits](docs/analysis.md).
-
-## Output changes in 0.2
-
-Version 0.2 replaced the misleading `path_to_da` JSON key with `path` and added
-the then-current `goal` key. These report keys were removed in 0.5 and 0.4
-respectively.
-The Python `path_to_da()` helper now means Domain Admins specifically; use
-`path_to_goal()` for the default high-value target set. Reports add domain-scoped
-`dcsync_findings`, `property_clues`, `delegation.rbcd`, and `trusts`. Existing
-`dcsync` name lists remain, but domain identity and grant provenance are in
-`dcsync_findings`.
-
-## Remaining coverage gaps
-
-| Area | What is still required |
-|---|---|
-| Local access and sessions | Conditional routes now join recorded relationships; verify current effective access, logon type and credential availability |
-| GPO effects | Candidate scope handles recorded containment and inheritance; filtering, enabled state, precedence and actual application still require confirmation |
-| AD CS | ESC1–ESC17 are listed, but some require data outside BloodHound; certificate-chain validation and live CA behavior remain separate checks |
-| Shares, SYSVOL file contents, services and live authentication | Separate protocol-specific enumeration and verification |
-| Full collector compatibility | Real lab output and comparisons with known configuration; synthetic fixtures cover selected cases only |

@@ -88,6 +88,41 @@ is evaluated. Unknown nested fields are listed even inside familiar objects. Unh
 RightName values are also listed with their source; a familiar Aces shape does
 not hide an unmodeled relationship.
 
+## Focused query notes
+
+`objects --kind` limits object type and `--match` filters names or IDs by
+substring. `object` returns the full recorded JSON object and its source file.
+Use an ObjectIdentifier when names collide. `controls --details` lists each
+distinct control-edge target with its recorded type, DN, and ObjectIdentifier.
+`clues` selects nonempty description/info, home/script/profile paths, password
+attributes, and flags such as `passwordnotreqd`, `trustedtoauth`, `admincount`,
+`haslaps`, and `enabled=false`; the full record remains available through
+`object`. JSON retains all selected clues; text and Markdown reports show
+populated password fields and description/info text with credential terms.
+
+`path` and `reachers` default to the `high-value` goal, while `route` defaults
+to `da`. The high-value set includes selected well-known RIDs, principals with
+recorded domain-control or replication rights, and `DnsAdmins`. `--goal da`
+uses loaded Domain Admins groups identified by domain SID and RID 512. A
+zero-hop path means the starting object is already a target. Reaching a
+high-value target does not imply Domain Admin membership.
+
+`dcsync` combines recorded replication grants per principal and domain,
+including nested group and `PrimaryGroupSID` membership. Grants on different
+domains are kept separate. Deny ACEs and effective-token restrictions are not
+evaluated. In local-access summaries, `attempted` counts records marked
+`Collected`; `answered` counts records with members. These counts describe
+saved collection results, not successful logons.
+
+`deleg` keeps raw SPNs separate from resolved delegation target objects; a
+target object alone does not identify a service or port. Trust direction in
+`trusts` is relative to the source domain. A recorded trust does not establish
+connectivity or access across the boundary.
+
+Markdown report source links point to the saved collection. With `-o`, links
+are relative to the report file; stdout uses absolute local paths. ZIP sources
+link to the archive and show the JSON member name beside it.
+
 ## Conditional route states
 
 `path` retains the legacy ACL/membership graph. `route` uses a separate state graph:
