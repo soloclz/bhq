@@ -471,7 +471,10 @@ class ControlTree:
 
 
 def _control_tree(data: dict) -> ControlTree:
-    """Display recorded ACL relationships once, then connect relevant membership."""
+    """Show bounded control chains while summarizing broad ACL sources."""
+    max_targets_per_source = 50
+    max_graph_lines = 120
+    max_depth = 4
     dc_ids = {row['id'] for row in data['domain_controllers']}
     all_acl = [edge for edge in data['recorded_edges']
                if edge['edge'] != 'MemberOf' and edge['from_resolved'] and edge['to_resolved']
@@ -479,9 +482,18 @@ def _control_tree(data: dict) -> ControlTree:
                and edge['from_kind'] in {'user', 'group', 'computer'}
                and edge['from_id'] not in dc_ids
                and rid_of(edge['from_id']) not in WELL_KNOWN_HIGH_VALUE_RIDS]
-    acl = [edge for edge in all_acl
-           if rid_of(edge['from_id']) is None or rid_of(edge['from_id']) >= 1000]
-    core_sources = {edge['from_id'] for edge in acl}
+    potential_acl = [edge for edge in all_acl
+                     if rid_of(edge['from_id']) is None or rid_of(edge['from_id']) >= 1000]
+
+    def broad_sources(edges: list[dict]) -> set[str]:
+        targets_by_source = defaultdict(set)
+        for edge in edges:
+            targets_by_source[edge['from_id']].add(edge['to_id'])
+        return {sid for sid, targets in targets_by_source.items()
+                if len(targets) > max_targets_per_source}
+
+    broad = broad_sources(potential_acl)
+    acl = [edge for edge in potential_acl if edge['from_id'] not in broad]
     core_targets = {edge['to_id'] for edge in acl}
     linked_roles = {edge['to_id'] for edge in data['recorded_edges']
                     if edge['edge'] == 'MemberOf' and edge['from_resolved']
@@ -489,20 +501,41 @@ def _control_tree(data: dict) -> ControlTree:
                     and (edge['from_id'] in core_targets
                          or (edge['from_kind'] == 'user'
                              and (rid_of(edge['from_id']) or 0) >= 1000))}
-    acl.extend(edge for edge in all_acl if edge['from_id'] in linked_roles and edge not in acl)
+    potential_keys = {(edge['from_id'], edge['edge'], edge['to_id'])
+                      for edge in potential_acl}
+    linked_acl = [edge for edge in all_acl
+                  if edge['from_id'] in linked_roles
+                  and (edge['from_id'], edge['edge'], edge['to_id']) not in potential_keys]
+    broad |= broad_sources(acl + linked_acl)
+    broad_acl = [edge for edge in potential_acl + linked_acl if edge['from_id'] in broad]
+    acl = [edge for edge in acl + linked_acl if edge['from_id'] not in broad]
     sources = {edge['from_id'] for edge in acl}
     targets = {edge['to_id'] for edge in acl}
-    membership = [edge for edge in data['recorded_edges']
-                  if edge['edge'] == 'MemberOf' and edge['from_id'] in targets
-                  and edge['to_id'] in sources and edge['from_resolved'] and edge['to_resolved']
-                  and not edge['from_deleted'] and not edge['to_deleted']]
+    live_membership = [edge for edge in data['recorded_edges']
+                       if edge['edge'] == 'MemberOf' and edge['from_resolved']
+                       and edge['to_resolved'] and not edge['from_deleted']
+                       and not edge['to_deleted']]
+    membership = [edge for edge in live_membership
+                  if edge['from_id'] in targets and edge['to_id'] in sources]
+    members_by_group = defaultdict(set)
+    for edge in live_membership:
+        if edge['to_id'] in sources and edge['from_kind'] == 'user':
+            members_by_group[edge['to_id']].add(edge['from_id'])
+    membership_keys = {(edge['from_id'], edge['to_id']) for edge in membership}
+    for edge in live_membership:
+        pair = (edge['from_id'], edge['to_id'])
+        if (edge['to_id'] in sources and edge['from_kind'] == 'user'
+                and len(members_by_group[edge['to_id']]) <= 3
+                and pair not in membership_keys):
+            membership.append(edge)
+            membership_keys.add(pair)
     selected = acl + membership
-    if not acl:
+    if not acl and not broad_acl:
         return ControlTree([], [])
 
     names = {}
     ids_by_name = defaultdict(set)
-    for edge in selected:
+    for edge in selected + broad_acl:
         for side in ('from', 'to'):
             sid = edge[f'{side}_id']
             names[sid] = (edge[side], edge[f'{side}_kind'])
@@ -521,10 +554,8 @@ def _control_tree(data: dict) -> ControlTree:
         adjacency[source].append(target)
     for source in adjacency:
         adjacency[source].sort(key=lambda sid: (label(sid).casefold(), sid))
-    incoming_acl = {target for (source, target), edges in grouped.items()
-                    if any(edge['edge'] != 'MemberOf' for edge in edges)}
-    roots = sorted((source for source in adjacency if source not in incoming_acl),
-                   key=lambda sid: (sid not in core_sources, label(sid).casefold(), sid))
+    incoming = {target for _, target in grouped}
+    roots = [source for source in adjacency if source not in incoming]
 
     note_by_pair = {}
     explanations = {
@@ -549,27 +580,65 @@ def _control_tree(data: dict) -> ControlTree:
             messages.append('Effective policy changes require the applicable GPO content and filtering.')
         if target_kind in {'enterpriseca', 'aiaca', 'rootca'}:
             messages.append('Directory-object control does not establish a CA service role.')
-        sources = ', '.join(_proof(edge['evidence']) for edge in edges)
-        note_by_pair[pair] = (target_kind, ' '.join(dict.fromkeys(messages)), sources)
+        source_refs = list(dict.fromkeys(
+            _proof(item) for edge in edges for item in edge['evidence']))
+        sources_text = ', '.join(source_refs[:3]) or '(not recorded)'
+        if len(source_refs) > 3:
+            sources_text += f'; {len(source_refs) - 3} more in JSON'
+        note_by_pair[pair] = (target_kind, ' '.join(dict.fromkeys(messages)), sources_text)
 
     graph = []
     notes = []
     note_numbers = {}
-    expanded = set()
+    shown_acl_pairs = set()
+    shown_member_pairs = set()
+    shown_nodes = set()
+    rendered_roots = set()
 
-    def walk(sid: str, prefix: str, ancestors: set[str]) -> None:
-        expanded.add(sid)
+    def root_rank(sid: str) -> tuple[int, int]:
+        """Prefer chains with multiple ACL steps before direct fan-out."""
+        stack = [(sid, 0, 0, frozenset({sid}))]
+        reachable_acl = set()
+        max_acl_steps = 0
+        examined = 0
+        while stack and examined < 256:
+            current, depth, acl_steps, ancestors = stack.pop()
+            examined += 1
+            if depth >= max_depth:
+                continue
+            for target in adjacency.get(current, []):
+                if target in ancestors:
+                    continue
+                pair = (current, target)
+                next_steps = acl_steps + (pair in note_by_pair)
+                if pair in note_by_pair:
+                    reachable_acl.add(pair)
+                max_acl_steps = max(max_acl_steps, next_steps)
+                stack.append((target, depth + 1, next_steps, ancestors | {target}))
+        return max_acl_steps, len(reachable_acl)
+
+    roots.sort(key=lambda sid: (-root_rank(sid)[0], -root_rank(sid)[1],
+                                label(sid).casefold(), sid))
+
+    def walk(sid: str, prefix: str, ancestors: set[str], depth: int) -> None:
+        if depth >= max_depth:
+            return
         children = [target for target in adjacency.get(sid, [])
                     if not (target in ancestors
                             and all(edge['edge'] == 'MemberOf' for edge in grouped[(sid, target)]))]
         for index, target in enumerate(children):
+            if len(graph) >= max_graph_lines:
+                return
             edges = grouped[(sid, target)]
             last = index == len(children) - 1
             connector = '└── ' if last else '├── '
             rights = ', '.join(dict.fromkeys(edge['edge'] for edge in edges))
             pair = (sid, target)
             ref = ''
+            if any(edge['edge'] == 'MemberOf' for edge in edges):
+                shown_member_pairs.add(pair)
             if pair in note_by_pair:
+                shown_acl_pairs.add(pair)
                 if pair not in note_numbers:
                     number = len(note_numbers) + 1
                     note_numbers[pair] = number
@@ -578,33 +647,69 @@ def _control_tree(data: dict) -> ControlTree:
                     notes.append(f'[{number}] {label(target)} [{kind}]: {detail}Source: {sources}')
                 ref = f' [{note_numbers[pair]}]'
             graph.append(f'{prefix}{connector}{rights} → {label(target)}{ref}')
-            if target not in ancestors and target not in expanded:
-                walk(target, prefix + ('    ' if last else '│   '), ancestors | {target})
+            shown_nodes.add(target)
+            if target not in ancestors:
+                walk(target, prefix + ('    ' if last else '│   '), ancestors | {target}, depth + 1)
+
+    def render_root(root: str) -> None:
+        if root in rendered_roots or len(graph) + 2 > max_graph_lines:
+            return
+        rendered_roots.add(root)
+        if graph:
+            graph.append('')
+        graph.append(label(root))
+        shown_nodes.add(root)
+        walk(root, '', {root}, 0)
 
     for root in roots:
-        if root not in expanded:
-            if graph:
-                graph.append('')
-            graph.append(label(root))
-            walk(root, '', {root})
-    for source in sorted(adjacency, key=lambda sid: (label(sid).casefold(), sid)):
-        if source not in expanded:
-            if graph:
-                graph.append('')
-            graph.append(label(source))
-            walk(source, '', {source})
+        render_root(root)
+    pairs_by_source = defaultdict(set)
+    for pair in note_by_pair:
+        pairs_by_source[pair[0]].add(pair)
+    for source in sorted(pairs_by_source, key=lambda sid: (label(sid).casefold(), sid)):
+        if pairs_by_source[source] - shown_acl_pairs:
+            render_root(source)
 
-    members = defaultdict(list)
-    for edge in data['recorded_edges']:
-        if (edge['edge'] == 'MemberOf' and edge['to_id'] in adjacency
-                and edge['to_kind'] == 'group' and edge['from_resolved']
-                and not edge['from_deleted'] and edge['from_id'] not in dc_ids
-                and edge['from_kind'] == 'user'
-                and (rid_of(edge['from_id']) or 0) >= 1000):
-            members[edge['to_id']].append(edge['from'])
-    for group in sorted(members, key=lambda sid: (label(sid).casefold(), sid)):
-        if members[group]:
-            notes.append(f'{label(group)} recorded members: {", ".join(sorted(set(members[group])))}.')
+    omitted = len(set(note_by_pair) - shown_acl_pairs)
+    if omitted:
+        graph.append(f'... {omitted} focused ACL relationships omitted; use bhq controls for detail.')
+
+    if broad_acl:
+        grouped_broad = defaultdict(list)
+        for edge in broad_acl:
+            grouped_broad[edge['from_id']].append(edge)
+        if graph:
+            graph.append('')
+        graph.append('Broad ACL sources (targets summarized):')
+        broad_order = sorted(grouped_broad, key=lambda sid: (
+            -len({edge['to_id'] for edge in grouped_broad[sid]}), label(sid).casefold(), sid))
+        for sid in broad_order[:12]:
+            rights = defaultdict(set)
+            for edge in grouped_broad[sid]:
+                rights[edge['edge']].add(edge['to_id'])
+            summary = ', '.join(f'{right} on {len(targets):,} targets'
+                                for right, targets in sorted(rights.items()))
+            graph.append(f'{label(sid)}: {summary}')
+        if len(broad_order) > 12:
+            graph.append(f'... {len(broad_order) - 12} more broad sources in JSON.')
+        notes.append('Broad ACL sources are summarized here; JSON retains every recorded edge.')
+
+    member_names = {edge['from_id']: edge['from'] for edge in live_membership
+                    if edge['from_kind'] == 'user'}
+    member_notes = []
+    for group in sorted((sid for sid in members_by_group if sid in shown_nodes),
+                        key=lambda sid: (label(sid).casefold(), sid)):
+        members = members_by_group[group]
+        if len(members) > 3:
+            member_notes.append(f'{label(group)} has {len(members)} recorded user members; use bhq members for names.')
+        else:
+            missing = members - {sid for sid in members if (sid, group) in shown_member_pairs}
+            if missing:
+                member_notes.append(f'{label(group)} recorded members: '
+                                    + ', '.join(sorted(member_names[sid] for sid in missing)) + '.')
+    notes.extend(member_notes[:12])
+    if len(member_notes) > 12:
+        notes.append(f'{len(member_notes) - 12} more group member summaries omitted; use bhq members for detail.')
     return ControlTree(graph, notes)
 
 

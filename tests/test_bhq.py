@@ -534,6 +534,84 @@ def test_report_tree_keeps_multistep_object_relationships(tmp_path):
         assert [Path(target).resolve() for target in _markdown_links(note)] == [users_file.resolve()]
 
 
+def test_report_control_shows_member_entry_and_summarizes_broad_grants(tmp_path):
+    _write(tmp_path)
+    alex, jordan = f'{DOM}-1101', f'{DOM}-1102'
+    help_desk, support, contractors = (f'{DOM}-1701', f'{DOM}-1702', f'{DOM}-1703')
+    broad, domain_users = f'{DOM}-1704', f'{DOM}-513'
+
+    users_file = tmp_path / 't_users.json'
+    users = json.loads(users_file.read_text())
+    users['data'].extend([
+        {'ObjectIdentifier': alex, 'Properties': {'samaccountname': 'alex'}, 'Aces': []},
+        {'ObjectIdentifier': jordan, 'Properties': {'samaccountname': 'jordan'},
+         'Aces': [{'PrincipalSID': help_desk, 'RightName': 'AllExtendedRights'}]},
+    ])
+    for index in range(80):
+        users['data'].append({
+            'ObjectIdentifier': f'{DOM}-{3000 + index}',
+            'Properties': {'samaccountname': f'noise{index:02d}'},
+            'Aces': [{'PrincipalSID': broad, 'RightName': 'GenericWrite'}],
+        })
+    users_file.write_text(json.dumps(users))
+
+    groups_file = tmp_path / 't_groups.json'
+    groups = json.loads(groups_file.read_text())
+    groups['data'].extend([
+        {'ObjectIdentifier': help_desk, 'Properties': {'name': 'Help Desk Tier III'},
+         'Members': [{'ObjectIdentifier': alex, 'ObjectType': 'User'}], 'Aces': []},
+        {'ObjectIdentifier': support, 'Properties': {'name': 'IT Support Managers'},
+         'Members': [{'ObjectIdentifier': jordan, 'ObjectType': 'User'}], 'Aces': []},
+        {'ObjectIdentifier': contractors, 'Properties': {'name': 'Contractors'},
+         'Members': [], 'Aces': [{'PrincipalSID': support, 'RightName': 'GenericWrite'}]},
+        {'ObjectIdentifier': broad, 'Properties': {'name': 'Broad Grant'},
+         'Members': [], 'Aces': []},
+        {'ObjectIdentifier': domain_users, 'Properties': {'name': 'Domain Users'},
+         'Members': [{'ObjectIdentifier': alex, 'ObjectType': 'User'}], 'Aces': []},
+    ])
+    groups_file.write_text(json.dumps(groups))
+
+    data = report.build(load(tmp_path))
+    md = report.as_md(data)
+    section = md.split('## Object control\n', 1)[1].split('\n## ', 1)[0]
+    graph = section.split('```text\n', 1)[1].split('\n```', 1)[0]
+
+    assert re.search(
+        r'(?m)^alex\n└── MemberOf → Help Desk Tier III\n'
+        r'    └── AllExtendedRights → jordan \[\d+\]\n'
+        r'        └── MemberOf → IT Support Managers\n'
+        r'            └── GenericWrite → Contractors \[\d+\]$',
+        graph,
+    )
+    assert 'Domain Users' not in graph
+    assert 'noise00' not in graph
+    assert 'Broad Grant' in section and '80' in section
+    assert len(section.splitlines()) < 100
+    assert sum(edge['from_id'] == broad and edge['edge'] == 'GenericWrite'
+               for edge in data['recorded_edges']) == 80
+
+
+def test_report_control_broad_only_keeps_summary(tmp_path):
+    broad = f'{DOM}-1704'
+    (tmp_path / 't_groups.json').write_text(json.dumps({'data': [
+        {'ObjectIdentifier': broad, 'Properties': {'name': 'Broad Grant'},
+         'Members': [], 'Aces': []},
+    ]}))
+    (tmp_path / 't_users.json').write_text(json.dumps({'data': [
+        {'ObjectIdentifier': f'{DOM}-{3000 + index}',
+         'Properties': {'samaccountname': f'noise{index:02d}'},
+         'Aces': [{'PrincipalSID': broad, 'RightName': 'GenericWrite'}]}
+        for index in range(51)
+    ]}))
+
+    data = report.build(load(tmp_path))
+    section = report.as_md(data).split('## Object control\n', 1)[1].split('\n## ', 1)[0]
+    assert 'Broad Grant: GenericWrite on 51 targets' in section
+    assert 'noise00' not in section
+    assert len(section.splitlines()) < 10
+    assert sum(edge['from_id'] == broad for edge in data['recorded_edges']) == 51
+
+
 def test_laps_read_does_not_become_computer_identity(tmp_path):
     _write(tmp_path)
     eve = f'{DOM}-1005'
