@@ -50,11 +50,12 @@ installing, run `PYTHONPATH=src python3 -m bhq --help` from the checkout.
 ## Usage
 
 ```sh
+mkdir -p reports
 bhq objects ./collection --kind gpo
 bhq clues ./collection --kind user
 bhq object ./collection "ALICE@TEST.LOCAL"
-bhq report ./collection --format md -o report.md
-bhq report ./collection --format json -o report.json
+bhq report ./collection --format md -o reports/report.md
+bhq report ./collection --format json -o reports/report.json
 bhq path ./collection.zip alice --goal da
 bhq controls ./collection "SRVADMINS@TEST.LOCAL" -d 3
 bhq controls ./collection "alice@TEST.LOCAL" -d 3 --details
@@ -64,7 +65,7 @@ bhq deleg ./collection
 bhq trusts ./collection
 bhq dcsync ./collection
 bhq reachers ./collection
-bhq adcs ./collection --from alice --format md -o adcs-alice.md
+bhq adcs ./collection --from alice --format md -o reports/adcs-alice.md
 ```
 
 Keep each collection snapshot in a separate directory. Duplicate object IDs are

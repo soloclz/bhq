@@ -8,8 +8,9 @@ legacy ACL/membership queries and report presentation.
 ## Start with the report, then query the relevant evidence
 
 ```sh
-bhq report ./collection --format md -o report.md
-bhq report ./collection --format json -o report.json
+mkdir -p reports
+bhq report ./collection --format md -o reports/report.md
+bhq report ./collection --format json -o reports/report.json
 bhq path ./collection alice --goal da
 bhq controls ./collection alice -d 3
 bhq sessions ./collection
