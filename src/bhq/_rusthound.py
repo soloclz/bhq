@@ -8,8 +8,8 @@ import json
 import re
 
 LEGACY_VERSIONS = {"RustHound-CE v2.5.12", "RustHound-CE v2.5.13"}
-V2_5_20 = "RustHound-CE v2.5.20"
-VERSIONS = LEGACY_VERSIONS | {V2_5_20}
+EXTENDED_PLACEHOLDER_VERSIONS = {"RustHound-CE v2.5.20", "RustHound-CE v2.5.30"}
+VERSIONS = LEGACY_VERSIONS | EXTENDED_PLACEHOLDER_VERSIONS
 BUILTINS = {
     "544": "ADMINISTRATORS", "548": "ACCOUNT OPERATORS",
     "550": "PRINT OPERATORS", "554": "PRE-WINDOWS 2000 COMPATIBLE ACCESS",
@@ -54,7 +54,7 @@ def _placeholder_for(actual, candidate, collector_version):
             "admincount": False,
         },
     }
-    if collector_version == V2_5_20:
+    if collector_version in EXTENDED_PLACEHOLDER_VERSIONS:
         expected["HasSIDHistory"] = []
         expected["Properties"].update({
             "objectguid": "", "doesanyacegrantownerrights": False,

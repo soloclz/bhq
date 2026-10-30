@@ -28,7 +28,7 @@ def pair(rid=548, name="ACCOUNT OPERATORS", version="2.5.12"):
                        "whencreated": 0, "admincount": False,
                        "isaclprotected": False, "highvalue": rid in (544, 548, 550)},
     }
-    if version == "2.5.20":
+    if version in ("2.5.20", "2.5.30"):
         default["HasSIDHistory"] = []
         default["Properties"].update({
             "objectguid": "", "doesanyacegrantownerrights": False,
@@ -44,7 +44,7 @@ def pair(rid=548, name="ACCOUNT OPERATORS", version="2.5.12"):
     actual["Members"] = [{"ObjectIdentifier": USER, "ObjectType": "User"}]
     actual["Aces"] = [{"PrincipalSID": USER, "PrincipalType": "User",
                        "RightName": "WriteDacl", "IsInherited": False}]
-    if version == "2.5.20":
+    if version in ("2.5.20", "2.5.30"):
         actual["Properties"].update({"objectguid": "SYNTHETIC-GUID",
             "adminsdholderprotected": True, "groupscope": "DomainLocal"})
     return actual, default
@@ -60,7 +60,7 @@ def write(tmp_path, rows, version="2.5.12", meta_changes=None, name="sample_grou
 
 
 @pytest.mark.parametrize("rid,name", NAMES)
-@pytest.mark.parametrize("version", ["2.5.12", "2.5.13", "2.5.20"])
+@pytest.mark.parametrize("version", ["2.5.12", "2.5.13", "2.5.20", "2.5.30"])
 @pytest.mark.parametrize("reverse", [False, True])
 @pytest.mark.parametrize("zipped", [False, True])
 def test_preserve_real_record_and_report_normalization(tmp_path, rid, name, version, reverse, zipped):
@@ -121,15 +121,16 @@ def test_refuse_ambiguous_or_nonempty_duplicates(tmp_path, change):
         load(tmp_path)
 
 
+@pytest.mark.parametrize("version", ["2.5.20", "2.5.30"])
 @pytest.mark.parametrize("change", ["history", "guid", "owner_rights", "scope", "protected"])
-def test_refuse_nondefault_new_fields(tmp_path, change):
-    actual, default = pair(version="2.5.20")
+def test_refuse_nondefault_new_fields(tmp_path, change, version):
+    actual, default = pair(version=version)
     if change == "history": default["HasSIDHistory"] = [USER]
     elif change == "guid": default["Properties"]["objectguid"] = "recorded-guid"
     elif change == "owner_rights": default["Properties"]["doesanyacegrantownerrights"] = True
     elif change == "scope": default["Properties"]["groupscope"] = "DomainLocal"
     elif change == "protected": default["Properties"]["adminsdholderprotected"] = True
-    write(tmp_path, [actual, default], version="2.5.20")
+    write(tmp_path, [actual, default], version=version)
     with pytest.raises(CollectionError, match="conflicting records within one file"):
         load(tmp_path)
 

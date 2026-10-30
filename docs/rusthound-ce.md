@@ -3,7 +3,8 @@
 Status: v2.5.12 source review, reduced synthetic fixtures, and an authorized
 private lab dump regression on Kali (2026-09-14). The builtin group collision
 rule was also checked against v2.5.20 source, synthetic fixtures, and a private
-lab dump on Kali (2026-10-01). No live collection was initiated by these tests,
+lab dump on Kali (2026-10-01), then against v2.5.30 source and a private dump
+on Kali (2026-10-30). No live collection was initiated by these tests,
 and no upstream serializer execution or BloodHound CE ingestion comparison was
 performed. The private JSON files are not stored in this repository.
 
@@ -15,7 +16,7 @@ not complete collector documents or a copied engagement collection.
 
 ## Builtin group placeholder collisions
 
-RustHound-CE 2.5.12, 2.5.13 and 2.5.20 append default builtin groups even when
+RustHound-CE 2.5.12, 2.5.13, 2.5.20 and 2.5.30 append default builtin groups even when
 LDAP has already supplied the same ObjectIdentifier. The reviewed `group.rs`, `sid.rs`,
 checker entry point and `checker/common.rs` are byte-identical between v2.5.12
 and v2.5.13.
@@ -31,9 +32,15 @@ still appends the same builtin groups; its
 serializes `HasSIDHistory` and six more `Properties` fields. bhq matches the
 source-defined empty values for that version and retains the LDAP record.
 
+The v2.5.30 release was checked on 2026-10-30 at commit
+`baa72858fe465528c7c9c025805375e0bb85d9bf`. Its
+[checker](https://github.com/g0h4n/RustHound-CE/blob/v2.5.30/src/json/checker/common.rs)
+still appends the same defaults, and its observed placeholders have the v2.5.20
+shape.
+
 bhq recognizes exactly one actual record plus one source-matching empty default
 for builtin RIDs 544, 548, 550, 554, 557, 560 and 561 within the same groups file.
-It requires schema 6 and one of the three reviewed collectorversion strings. These
+It requires schema 6 and one of the four reviewed collectorversion strings. These
 labels identify a compatibility rule, not proof of collector authenticity.
 The actual record must identify a live builtin group in the matching domain;
 the default must match the complete known shape, with no ACEs, members or extra
@@ -60,6 +67,8 @@ On the private v2.5.20 dump, seven builtin pairs were normalized; the `coverage`
 and Markdown `report` commands completed, and the original JSON checksums were
 unchanged. This validates the collision rule and those commands on that dump,
 not all v2.5.20 collection fields or analysis paths.
+On the private v2.5.30 dump, seven builtin pairs were normalized and the Markdown
+`report` command completed. The input JSON files were not changed.
 
 ## Output contract and handling
 
